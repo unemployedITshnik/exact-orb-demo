@@ -1,0 +1,201 @@
+@startuml
+title exact-orb — E2E: веб-чат со стримингом, натальная карта
+
+autonumber
+skinparam shadowing false
+skinparam ParticipantPadding 12
+skinparam BoxPadding 12
+skinparam DefaultFontSize 12
+
+actor "Пользователь" as User
+
+box "КАНАЛ" #E3F2FD
+  boundary "API Gateway\nSSE" as Entry
+end box
+
+box "РЕШЕНИЕ И КООРДИНАЦИЯ" #E8F5E9
+  control "Orchestrator" as Orch
+  control "Planner" as Planner
+  database "ScenarioRegistry" as ScenReg
+  control "Clarification" as Clarify
+end box
+
+box "ПОНИМАНИЕ ЗАПРОСА" #FFF3E0
+  control "IntentService\n(фасад)" as Intent
+  control "Intent Extractor" as Extr
+  control "Input Resolver" as Res
+  control "Geocoder" as Geo
+  control "Historical TZ" as Tz
+end box
+
+box "ИНСТРУМЕНТЫ" #E8F5E9
+  database "ToolRegistry" as ToolReg
+  control "NatalTool" as NatalTool
+end box
+
+box "РАСЧЁТ" #E8F5E9
+  control "EngineService\nget_natal()" as Engine
+end box
+
+box "ИЗЛОЖЕНИЕ" #E8F5E9
+  control "DataSelector" as Selector
+  control "PromptBuilder" as PBuilder
+end box
+
+box "LLM" #FFF3E0
+  control "LLM Gateway" as Gateway
+  participant "Провайдер" as Provider
+end box
+
+box "СОСТОЯНИЕ" #ECEFF1
+  database "ContextService" as Ctx
+  database "Calculation Cache" as Cache
+  database "Journal" as Journal
+end box
+
+User -> Entry : «Расскажи о моей натальной карте.\nРодилась 2 сентября 1990, 14:30, Москва»
+activate Entry
+
+Entry -> Entry : лимиты, квота,\nдедупликация
+Entry -> Orch : handle(session_id, conversation_id, text)
+activate Orch
+Entry --> User : открыт поток SSE
+
+== Контекст ==
+Orch -> Ctx : load(conversation_id)
+activate Ctx
+Ctx --> Orch : контекст пуст,\npending нет
+deactivate Ctx
+
+Orch ->> Entry : event: status\n«разбираю запрос»
+Entry ->> User : status
+
+== Понимание запроса ==
+Orch -> Intent : understand(text, context)
+activate Intent
+
+Intent -> Extr : extract(text, context)
+activate Extr
+Extr --> Intent : ExtractedEntities\ntopics=[natal], дата, время,\nместо-кандидат «Москва», focus=[natal]
+deactivate Extr
+
+Intent -> Res : resolve(entities)
+activate Res
+Res -> Geo : «Москва»
+activate Geo
+Geo --> Res : lat 55.7558, lon 37.6173\ntz_id = Europe/Moscow
+deactivate Geo
+Res -> Tz : смещение на 1990-09-02 14:30\nв Europe/Moscow
+activate Tz
+Tz --> Res : UTC+4 — летнее время,\nотменено 30.09.1990
+deactivate Tz
+Res --> Intent : ResolvedContract
+deactivate Res
+
+Intent --> Orch : ResolvedContract\nutc = 10:30, lat/lon, tz_id,\ntime_assumed=false, focus=[natal]
+deactivate Intent
+
+note over Orch, Intent
+  Оркестратор вызывает «Понимание» один раз
+  и не знает, что внутри два шага.
+  Сырого текста в контракте нет — Planner его не увидит.
+end note
+
+== Планирование ==
+Orch -> Planner : plan(contract)
+activate Planner
+Planner -> ScenReg : get("natal")
+activate ScenReg
+ScenReg --> Planner : tools=[natal]\ntopics=[natal, recipe=natal.general, mode=full]
+deactivate ScenReg
+Planner --> Orch : InterpretationPlan\ntool_requests[], topics[], missing_slots=[]
+deactivate Planner
+
+alt missing_slots не пуст
+  Orch -> Clarify : собрать вопрос по всем пробелам
+  activate Clarify
+  Clarify --> Orch : ClarificationRequest (без LLM)
+  deactivate Clarify
+  Orch -> Ctx : save(pending) — немедленно
+  Orch ->> Entry : event: clarification
+  Entry ->> User : вопрос, поток закрыт
+else данных достаточно
+  Orch ->> Entry : event: status «считаю карту»
+  Entry ->> User : status
+
+  == Расчёт ==
+  Orch -> ToolReg : get("natal")
+  activate ToolReg
+  ToolReg --> Orch : адаптер по конфигурации
+  deactivate ToolReg
+
+  Orch -> NatalTool : run(ToolRequest)
+  activate NatalTool
+  NatalTool -> Cache : lookup(хэш параметров)
+  activate Cache
+  Cache --> NatalTool : промах
+  deactivate Cache
+
+  NatalTool -> Engine : get_natal(utc, lat, lon,\nhouse_system, rulership, include)
+  activate Engine
+  Engine -> Engine : дома и углы, тела,\nпроизводные точки, управители,\nаспекты → конфигурации → сила
+  Engine --> NatalTool : NatalChart\nchart_kind="natal" + warnings
+  deactivate Engine
+
+  NatalTool -> Cache : store(результат)
+  NatalTool --> Orch : ToolResult(data, warnings, meta)
+  deactivate NatalTool
+
+  == Изложение ==
+  Orch ->> Entry : event: status «готовлю разбор»
+  Orch -> Selector : select(plan, tool_results)
+  activate Selector
+  Selector --> Orch : Evidence по темам\n(warnings перенесены)
+  deactivate Selector
+
+  Orch -> PBuilder : build(plan, evidence)
+  activate PBuilder
+  PBuilder --> Orch : один PromptBundle
+  deactivate PBuilder
+
+  == Поток от модели ==
+  Orch -> Gateway : complete_stream(bundle,\nпрофиль «интерпретация», max_tokens)
+  activate Gateway
+  Gateway -> Provider : chat completion, stream
+  activate Provider
+
+  loop пока идут куски
+    Provider -->> Gateway : chunk
+    Gateway -->> Orch : chunk
+    Orch -> Orch : накопить текст
+    Orch ->> Entry : event: token
+    Entry ->> User : token
+  end
+
+  alt поток завершён успешно
+    Provider --> Gateway : конец потока
+    Gateway --> Orch : usage, латентность
+    Orch ->> Entry : event: done\n+ предупреждения расчёта
+  else сбой после начала потока
+    Provider --> Gateway : ошибка
+    Gateway --> Orch : LLMGatewayError
+    Orch ->> Entry : event: error\n(HTTP-код изменить уже нельзя)
+  end
+  deactivate Provider
+  deactivate Gateway
+end
+
+== Финализация ==
+Orch -> Ctx : save(delta)\nконтракт, ходы диалога
+Orch ->> Journal : Analytics + History\n(не блокирует ответ)
+deactivate Orch
+Entry --> User : поток закрыт
+deactivate Entry
+
+note over Orch, Journal
+  Финализация выполняется по накопленному тексту.
+  При обрыве соединения полученное сохраняется:
+  токены уже оплачены, терять ход целиком незачем.
+end note
+
+@enduml

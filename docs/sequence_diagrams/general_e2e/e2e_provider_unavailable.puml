@@ -1,0 +1,106 @@
+@startuml
+title exact-orb — E2E: провайдер LLM недоступен (отказ до первого чанка)
+
+autonumber
+skinparam shadowing false
+skinparam ParticipantPadding 12
+skinparam BoxPadding 12
+skinparam DefaultFontSize 12
+
+actor "Пользователь" as User
+
+box "КАНАЛ" #E3F2FD
+  boundary "API Gateway\nSSE" as Entry
+end box
+
+box "РЕШЕНИЕ И КООРДИНАЦИЯ" #E8F5E9
+  control "Orchestrator" as Orch
+end box
+
+box "ИЗЛОЖЕНИЕ" #E8F5E9
+  control "DataSelector" as Selector
+  control "PromptBuilder" as PBuilder
+end box
+
+box "LLM" #FFF3E0
+  control "LLM Gateway" as Gateway
+  participant "Провайдер" as Provider
+end box
+
+box "СОСТОЯНИЕ" #ECEFF1
+  database "ContextService" as Ctx
+  database "Journal" as Journal
+end box
+
+note over User, Journal
+  Шаги до этого момента (контекст, понимание,
+  планирование, расчёт карты — с попаданием
+  или промахом кэша) совпадают с позитивным
+  сценарием и здесь опущены для краткости.
+  Ветвление начинается на вызове LLM Gateway.
+end note
+
+User -> Entry : «Расскажи о моей натальной карте...»
+activate Entry
+Entry --> User : открыт поток SSE
+Entry -> Orch : handle(session_id, conversation_id, text)
+activate Orch
+
+Orch ->> Entry : event: status «готовлю разбор»
+Entry ->> User : status
+Orch -> Selector : select(plan, tool_results)
+activate Selector
+Selector --> Orch : Evidence по темам
+deactivate Selector
+Orch -> PBuilder : build(plan, evidence)
+activate PBuilder
+PBuilder --> Orch : PromptBundle
+deactivate PBuilder
+
+== Поток от модели: провайдер недоступен с самого начала ==
+Orch -> Gateway : complete_stream(bundle,\nпрофиль «интерпретация», max_tokens)
+activate Gateway
+Gateway -> Provider : chat completion, stream
+activate Provider
+Provider --x Gateway : соединение не установлено /\nтаймаут ДО первого чанка
+deactivate Provider
+Gateway --> Orch : LLMGatewayError\n(ни одного chunk не было)
+deactivate Gateway
+
+note over Gateway
+  Ни один event: token не был отправлен.
+  Открытый вопрос: пробует ли LLM Gateway
+  запасной профиль/провайдера перед тем, как
+  сдаться (failover). ADR-0012 фиксирует только
+  complete() / complete_stream(), политика
+  ретраев и фолбэка провайдера не описана —
+  здесь показан вариант без повтора.
+end note
+
+Orch ->> Entry : event: error\n(HTTP-код 200 уже отдан —\nизменить нельзя, см. ADR-0012)
+Entry ->> User : error, поток закрыт
+
+note over Orch, Entry
+  Механика доставки ошибки та же, что и при
+  обрыве ПОСЛЕ начала генерации (см. позитивный
+  сценарий, ветка «сбой после начала потока»):
+  SSE открывается сразу при входе в Orchestrator,
+  задолго до вызова провайдера, поэтому и здесь
+  единственный канал для ошибки — событие внутри
+  уже открытого потока.
+
+  Разница — в том, что сохранять при финализации:
+  там есть частично накопленный текст, здесь —
+  ни одного токена, значит и в History ложится
+  пустой ответ с признаком полного отказа,
+  а не частичный текст.
+end note
+
+== Финализация ==
+Orch -> Ctx : save(delta) — контракт и факт\nпопытки остаются в сессии
+Orch ->> Journal : Analytics(status=provider_unavailable,\ntokens=0) + History(текст ответа = пусто)
+deactivate Orch
+Entry --> User : поток закрыт
+deactivate Entry
+
+@enduml

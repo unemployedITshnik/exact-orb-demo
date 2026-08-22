@@ -1,0 +1,85 @@
+@startuml
+title exact-orb — верхний уровень декомпозиции
+
+skinparam shadowing false
+skinparam linetype polyline
+skinparam nodesep 60
+skinparam ranksep 70
+skinparam ArrowFontSize 11
+skinparam DefaultFontSize 12
+skinparam rectangle {
+  BackgroundColor<<вероятностное>> #FFF3E0
+  BorderColor<<вероятностное>> #EF6C00
+  BackgroundColor<<детерминированное>> #E8F5E9
+  BorderColor<<детерминированное>> #2E7D32
+  BackgroundColor<<состояние>> #ECEFF1
+  BorderColor<<состояние>> #546E7A
+  BackgroundColor<<канал>> #E3F2FD
+  BorderColor<<канал>> #1565C0
+}
+
+legend top right
+  |= Цвет |= Природа блока |
+  |<#E3F2FD>| канал взаимодействия |
+  |<#FFF3E0>| вероятностное (LLM) |
+  |<#E8F5E9>| детерминированное |
+  |<#ECEFF1>| состояние и платформа |
+endlegend
+
+actor "Пользователь" as User
+
+rectangle "КАНАЛ\n<b>API Gateway</b>\nприём запроса и выдача ответа\n----------\nEntry point (API / бот)\nCLI — прямой расчёт, минует агента" as Channel <<канал>>
+
+rectangle "ПОНИМАНИЕ ЗАПРОСА\n<b>IntentService</b>\nчто человек сказал и какими данными\n----------\nIntent Extractor (rule-based → LLM)\nInput Resolver\nGeocoder\nHistorical TZ Resolver" as Understanding <<вероятностное>>
+
+rectangle "РЕШЕНИЕ И КООРДИНАЦИЯ\n<b>Orchestrator</b>\nчто делать, чего не хватает, в каком порядке\n----------\nOrchestrator (stateless)\nPlanner\nScenarioRegistry\nClarification + ClarificationRegistry\nToolRegistry / LocalTool / RemoteTool" as Orch <<детерминированное>>
+
+rectangle "РАСЧЁТ\n<b>EngineService</b>\nпредметное ядро астрологии\n----------\nephemeris — примитивы\ncharts — natal, transit, соляр\naspects / configurations / strength" as Calculation <<детерминированное>>
+
+rectangle "ИЗЛОЖЕНИЕ\n<b>InterpretationService</b>\nотбор фактов и сборка промпта\n----------\nDataSelector\nPromptBuilder\nPromptRegistry" as Interpretation <<детерминированное>>
+
+rectangle "LLM\n<b>LLMService</b>\nтранспорт к модели\n----------\nLLM Gateway\nпрофили: извлечение / интерпретация\nLiteLLM → провайдер" as LLM <<вероятностное>>
+
+rectangle "СОСТОЯНИЕ И ПАМЯТЬ\n<b>ContextService</b>\n----------\nContext Manager\nSession Store (TTL)\nCalculation Cache\nJournal: Analytics / History" as State <<состояние>>
+
+rectangle "ПЛАТФОРМА\n<b>Platform</b>\n----------\nconfig.py\nlogging_setup.py" as Platform <<состояние>>
+
+' ===== ход запроса =====
+User -down-> Channel : 1. сообщение на\nестественном языке
+Channel -down-> Orch : 2. текст + идентификаторы
+
+Orch -left-> Understanding : 3. сырой текст\n+ контекст диалога
+Understanding -right-> Orch : 4. типизированный контракт\n(сырого текста ниже нет)
+
+Orch -down-> Calculation : 5. что посчитать\n(через Tool-адаптер: local | remote)
+Calculation -up-> Orch : 6. факты карты\n+ предупреждения
+
+Orch -right-> Interpretation : 7. план + факты
+Interpretation -left-> Orch : 8. один PromptBundle
+
+Orch --> LLM : 9. промпт\n(профиль «интерпретация»)
+LLM --> Orch : 10. готовый текст
+
+Orch -up-> Channel : 11. ответ\nлибо уточняющий вопрос\n(без расчёта и без LLM)
+Channel -up-> User : 12. разбор
+
+Understanding ..> LLM : профиль «извлечение»\n(локальная модель, 2-я очередь)
+
+' ===== состояние и платформа =====
+Orch ..> State : контекст, кэш, журналы
+Platform ..> Orch : конфигурация и логирование\nсквозные для всех блоков
+
+Interpretation -[hidden]down- LLM
+State -[hidden]right- Platform
+
+note bottom of Calculation
+  Ядро детерминировано: одни и те же
+  входные данные — один и тот же результат.
+end note
+
+note bottom of LLM
+  Единственный вероятностный блок в потоке.
+  Отбор фактов и сборка промпта — уже нет.
+end note
+
+@enduml

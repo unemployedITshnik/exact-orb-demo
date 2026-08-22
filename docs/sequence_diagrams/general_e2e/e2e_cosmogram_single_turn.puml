@@ -1,0 +1,212 @@
+@startuml
+title exact-orb — E2E: место известно, время рождения не известно (космограмма, один ход)
+
+autonumber
+skinparam shadowing false
+skinparam ParticipantPadding 12
+skinparam BoxPadding 12
+skinparam DefaultFontSize 12
+
+actor "Пользователь" as User
+
+box "КАНАЛ" #E3F2FD
+  boundary "API Gateway\nSSE" as Entry
+end box
+
+box "РЕШЕНИЕ И КООРДИНАЦИЯ" #E8F5E9
+  control "Orchestrator" as Orch
+  control "Planner" as Planner
+  database "ScenarioRegistry" as ScenReg
+end box
+
+box "ПОНИМАНИЕ ЗАПРОСА" #FFF3E0
+  control "IntentService\n(фасад)" as Intent
+  control "Intent Extractor" as Extr
+  control "Input Resolver" as Res
+  control "Geocoder" as Geo
+  control "Historical TZ" as Tz
+end box
+
+box "ИНСТРУМЕНТЫ" #E8F5E9
+  database "ToolRegistry" as ToolReg
+  control "NatalTool" as NatalTool
+end box
+
+box "РАСЧЁТ" #E8F5E9
+  control "EngineService\nget_natal()" as Engine
+end box
+
+box "ИЗЛОЖЕНИЕ" #E8F5E9
+  control "DataSelector" as Selector
+  control "PromptBuilder" as PBuilder
+end box
+
+box "LLM" #FFF3E0
+  control "LLM Gateway" as Gateway
+  participant "Провайдер" as Provider
+end box
+
+box "СОСТОЯНИЕ" #ECEFF1
+  database "ContextService" as Ctx
+  database "Calculation Cache" as Cache
+  database "Journal" as Journal
+end box
+
+User -> Entry : «Расскажи о моей натальной карте.\nРодилась 2 сентября 1990 в Москве,\nточное время не знаю»
+activate Entry
+
+Entry -> Entry : лимиты, квота,\nдедупликация
+Entry -> Orch : handle(session_id, conversation_id, text)
+activate Orch
+Entry --> User : открыт поток SSE
+
+== Контекст ==
+Orch -> Ctx : load(conversation_id)
+activate Ctx
+Ctx --> Orch : контекст пуст,\npending нет
+deactivate Ctx
+
+Orch ->> Entry : event: status «разбираю запрос»
+Entry ->> User : status
+
+== Понимание запроса ==
+Orch -> Intent : understand(text, context)
+activate Intent
+
+Intent -> Extr : extract(text, context)
+activate Extr
+Extr --> Intent : ExtractedEntities\ntopics=[natal], дата 1990-09-02,\nвремя = неизвестно (явно),\nместо-кандидат «Москва»
+deactivate Extr
+
+Intent -> Res : resolve(entities)
+activate Res
+Res -> Geo : «Москва»
+activate Geo
+Geo --> Res : lat 55.7558, lon 37.6173\ntz_id = Europe/Moscow
+deactivate Geo
+
+note right of Res
+  Место — жёсткий слот (ADR-0008) и нужно
+  ровно тем же образом, что и при известном
+  времени: без него не определить ни часовой
+  пояс, ни момент в UTC даже для точки отсчёта.
+  «Города не важно» здесь не бывает.
+end note
+
+Res -> Tz : смещение на 1990-09-02, полдень,\nв Europe/Moscow
+activate Tz
+Tz --> Res : UTC+4 — летнее время,\nотменено 30.09.1990
+deactivate Tz
+
+Res -> Res : время неизвестно →\nполдень как точка отсчёта\nТОЛЬКО для долгот планет;\ntime_assumed = true
+Res -> Res : проверка: не меняет ли Луна\nзнак в течение суток?
+alt Луна меняет знак в течение суток
+  Res -> Res : добавить предупреждение\nmoon_sign_ambiguous
+else Луна знак не меняет
+  Res -> Res : предупреждений о Луне нет
+end
+
+Res --> Intent : ResolvedContract\n(время не резолвлено полностью)
+deactivate Res
+
+Intent --> Orch : ResolvedContract\nutc ≈ 08:00 (полдень МСК), lat/lon,\ntime_assumed=true, focus=[]
+deactivate Intent
+
+== Планирование ==
+Orch -> Planner : plan(contract)
+activate Planner
+Planner -> ScenReg : get(scenario_id)
+
+note right of Planner
+  Planner видит time_assumed=true и, по
+  ADR-0008, сопоставляет контракт со сценарием
+  cosmogram, а не natal — это подтип на уровне
+  сценария/рецепта, а не движка: другой
+  scenario_id и recipe, тот же инструмент.
+  Место есть → missing_slots пуст, уточнение
+  не требуется, всё решается в один ход.
+end note
+
+activate ScenReg
+ScenReg --> Planner : tools=[natal]\ntopics=[natal, recipe=cosmogram.general, mode=full]\ninclude: без houses и rulers
+deactivate ScenReg
+Planner --> Orch : InterpretationPlan\nscenario_id=cosmogram, missing_slots=[]
+deactivate Planner
+
+Orch ->> Entry : event: status «считаю карту»
+Entry ->> User : status
+
+== Расчёт ==
+Orch -> ToolReg : get("natal")
+activate ToolReg
+ToolReg --> Orch : адаптер по конфигурации
+deactivate ToolReg
+
+Orch -> NatalTool : run(ToolRequest,\ninclude без houses/rulers)
+activate NatalTool
+NatalTool -> Cache : lookup(хэш параметров)
+activate Cache
+Cache --> NatalTool : промах
+deactivate Cache
+
+NatalTool -> Engine : get_natal(utc, lat, lon,\ninclude без houses и rulers)
+activate Engine
+Engine -> Engine : только тела и производные точки,\nдома и углы НЕ считаются вовсе
+Engine --> NatalTool : NatalChart\nchart_kind="cosmogram"\nwarnings=[time_unknown, moon_sign_ambiguous?]
+deactivate Engine
+
+NatalTool -> Cache : store(результат)
+NatalTool --> Orch : ToolResult(data, warnings, meta)
+deactivate NatalTool
+
+== Изложение ==
+Orch ->> Entry : event: status «готовлю разбор»
+Orch -> Selector : select(plan, tool_results)
+activate Selector
+Selector --> Orch : Evidence: планеты в знаках,\nаспекты, конфигурации\n(домов и управителей нет в чарте)\nпредупреждения перенесены
+deactivate Selector
+
+Orch -> PBuilder : build(plan, evidence)
+activate PBuilder
+PBuilder -> PBuilder : рецепт cosmogram.general:\nзапрещает упоминать дома,\nасцендент и управителей домов;\nтребует оговорить неизвестное время
+PBuilder --> Orch : PromptBundle
+deactivate PBuilder
+
+== Поток от модели ==
+Orch -> Gateway : complete_stream(bundle,\nпрофиль «интерпретация», max_tokens)
+activate Gateway
+Gateway -> Provider : chat completion, stream
+activate Provider
+
+loop пока идут куски
+  Provider -->> Gateway : chunk
+  Gateway -->> Orch : chunk
+  Orch -> Orch : накопить текст
+  Orch ->> Entry : event: token
+  Entry ->> User : token
+end
+
+Provider --> Gateway : конец потока
+Gateway --> Orch : usage, латентность
+Orch ->> Entry : event: done\n+ предупреждения (время не известно,\nдома не рассчитывались)
+deactivate Provider
+deactivate Gateway
+
+== Финализация ==
+Orch -> Ctx : save(delta)
+Orch ->> Journal : Analytics(status=ok, scenario=cosmogram)\n+ History
+deactivate Orch
+Entry --> User : поток закрыт
+deactivate Entry
+
+note over Orch, Journal
+  Никакого уточнения не потребовалось: место —
+  жёсткий слот и оно было закрыто сразу, время —
+  мягкий пробел, который меняет сценарий и рецепт,
+  а не блокирует ответ. Двухходовой вариант (когда
+  неизвестны и место, и время) описан отдельно —
+  там clarification обязателен именно из-за
+  отсутствующего места, а не времени.
+end note
+
+@enduml

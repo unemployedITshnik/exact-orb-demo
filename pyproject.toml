@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exact-orb"
+version = "0.1.0"
+description = "Deterministic astrological calculations."
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.97",
+    "pydantic>=2",
+    "pysweph>=2.10.3.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6",
+    "pytest>=8",
+]
+
+[project.scripts]
+exact-orb = "exact_orb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.exact_orb]
+ephemeris_path = "ephe"
+selena_method = "true_perigee"
+llm_timeout = 60
+llm_retries = 2
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
