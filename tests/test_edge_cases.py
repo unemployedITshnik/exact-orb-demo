@@ -24,6 +24,7 @@ def test_high_latitude_placidus_raises_clear_error() -> None:
             datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
             67.0,
             37.6155,
+            chart_kind="natal",
             house_system="P",
             body_ids={"sun": BODY_IDS["sun"]},
         )
@@ -57,6 +58,7 @@ def test_retrograde_flag_matches_reference(body_name: str, expected_retrograde: 
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         body_ids={body_name: BODY_IDS[body_name]},
     )

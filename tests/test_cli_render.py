@@ -72,6 +72,7 @@ def _reference_output(*, max_aspect_orb: float = 7.0) -> str:
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=7.0),
         configuration_config=ConfigurationConfig(configuration_max_orb=7.0),

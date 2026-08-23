@@ -264,6 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parsed.local_datetime,
             args.lat,
             args.lon,
+            chart_kind="natal",
             house_system=args.house_system,
             rulership=args.rulership,
             ephemeris_path=args.ephe_path,

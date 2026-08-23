@@ -139,6 +139,7 @@ def test_max_orb_boundary_filters_moon_jupiter_sextile() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=1.0),
     )
@@ -146,6 +147,7 @@ def test_max_orb_boundary_filters_moon_jupiter_sextile() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=1.1),
     )
@@ -188,6 +190,7 @@ def test_include_without_aspects_sets_block_to_none() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         include={"positions", "houses", "rulers"},
     )
@@ -268,6 +271,7 @@ def _reference_chart():
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=7.0),
     )

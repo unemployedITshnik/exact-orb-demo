@@ -55,6 +55,7 @@ from exact_orb.engine.strength.types import (
 
 
 LOGGER = logging.getLogger(__name__)
+ChartKind = Literal["natal", "cosmogram"]
 DEFAULT_INCLUDE = frozenset(
     {"positions", "houses", "rulers", "aspects", "configurations", "strength"}
 )
@@ -90,6 +91,7 @@ class HouseRulers(BaseModel):
 class NatalChart(BaseModel):
     """Deterministic natal chart data."""
 
+    chart_kind: ChartKind
     datetime_utc: datetime
     julian_day_ut: float
     latitude: float
@@ -114,6 +116,7 @@ def get_natal(
     latitude: float,
     longitude: float,
     *,
+    chart_kind: ChartKind,
     house_system: str | bytes = b"P",
     body_ids: Mapping[str, int] | None = None,
     ephemeris_flags: int = swe.FLG_SWIEPH,
@@ -134,8 +137,9 @@ def get_natal(
 
     started_at = perf_counter()
     LOGGER.debug(
-        "get_natal start birth_datetime=%s latitude=%.6f longitude=%.6f house_system=%s "
+        "get_natal start chart_kind=%s birth_datetime=%s latitude=%.6f longitude=%.6f house_system=%s "
         "rulership=%s include=%s ephemeris_path=%s",
+        chart_kind,
         birth_datetime.isoformat(),
         latitude,
         longitude,
@@ -145,6 +149,8 @@ def get_natal(
         ephemeris_path,
     )
     include_blocks = _normalize_include(include)
+    _validate_chart_kind_include(chart_kind, include_blocks)
+    houses_included = "houses" in include_blocks
     ephemeris = configure_ephemeris(ephemeris_path)
     LOGGER.debug(
         "ephemeris configured mode=%s source=%s path=%s missing=%s",
@@ -163,16 +169,31 @@ def get_natal(
     julian_day_ut = ephemeris_jd_ut(utc_datetime)
     flags = ephemeris_flags | swe.FLG_SPEED
 
-    step_started_at = perf_counter()
-    cusps, angles = calculate_houses(julian_day_ut, latitude, longitude, hsys)
-    LOGGER.debug(
-        "natal_houses calculated cusps=%d angles=%d duration_ms=%.3f",
-        len(cusps),
-        len(angles),
-        _elapsed_ms(step_started_at),
-    )
+    if houses_included:
+        step_started_at = perf_counter()
+        cusps, angles = calculate_houses(julian_day_ut, latitude, longitude, hsys)
+        LOGGER.debug(
+            "natal_houses calculated cusps=%d angles=%d duration_ms=%.3f",
+            len(cusps),
+            len(angles),
+            _elapsed_ms(step_started_at),
+        )
+    else:
+        cusps, angles = None, {}
+        LOGGER.debug("natal_houses skipped include_houses=False")
     step_started_at = perf_counter()
     bodies, warnings = calculate_bodies(julian_day_ut, body_ids or DEFAULT_BODY_IDS, flags, cusps)
+    if not houses_included:
+        warnings.append(
+            CalculationWarning(
+                source="include",
+                message=(
+                    "houses were not requested: house placements, angles, and "
+                    "angle-derived points are absent from this chart"
+                ),
+                retflags=None,
+            )
+        )
     LOGGER.debug(
         "natal_bodies calculated bodies=%d warnings=%d duration_ms=%.3f",
         len(bodies),
@@ -186,15 +207,19 @@ def get_natal(
         len(bodies),
         _elapsed_ms(step_started_at),
     )
-    step_started_at = perf_counter()
-    interceptions = _calculate_interceptions(cusps, scheme, near_interception_threshold)
-    house_rulers = _calculate_house_rulers(cusps, interceptions, scheme)
-    LOGGER.debug(
-        "natal_rulership calculated interceptions=%d house_rulers=%d duration_ms=%.3f",
-        len(interceptions),
-        len(house_rulers),
-        _elapsed_ms(step_started_at),
-    )
+    if houses_included:
+        step_started_at = perf_counter()
+        interceptions = _calculate_interceptions(cusps, scheme, near_interception_threshold)
+        house_rulers = _calculate_house_rulers(cusps, interceptions, scheme)
+        LOGGER.debug(
+            "natal_rulership calculated interceptions=%d house_rulers=%d duration_ms=%.3f",
+            len(interceptions),
+            len(house_rulers),
+            _elapsed_ms(step_started_at),
+        )
+    else:
+        interceptions, house_rulers = (), ()
+        LOGGER.debug("natal_rulership skipped include_houses=False")
     configured_aspects = aspect_config or AspectConfig.natal()
     step_started_at = perf_counter()
     calculated_aspects = (
@@ -246,6 +271,7 @@ def get_natal(
     )
 
     chart = NatalChart(
+        chart_kind=chart_kind,
         datetime_utc=utc_datetime,
         julian_day_ut=julian_day_ut,
         latitude=latitude,
@@ -255,8 +281,8 @@ def get_natal(
         ephemeris=ephemeris,
         selena_method=configured_selena_method,
         bodies=bodies if "positions" in include_blocks else None,
-        cusps=cusps if "houses" in include_blocks else None,
-        angles=angles if "houses" in include_blocks else None,
+        cusps=cusps if houses_included else None,
+        angles=angles if houses_included else None,
         house_rulers=house_rulers if "rulers" in include_blocks else None,
         interceptions=interceptions if "rulers" in include_blocks else None,
         aspects=calculated_aspects if "aspects" in include_blocks else None,
@@ -284,7 +310,24 @@ def _normalize_include(include: AbstractSet[str] | None) -> frozenset[str]:
     unknown = include_blocks - INCLUDE_BLOCKS
     if unknown:
         raise ValueError(f"unknown include block(s): {', '.join(sorted(unknown))}")
+    if "rulers" in include_blocks and "houses" not in include_blocks:
+        raise ValueError('include block "rulers" requires "houses"')
+    if "strength" in include_blocks and "houses" not in include_blocks:
+        raise ValueError('include block "strength" requires "houses"')
     return include_blocks
+
+
+def _validate_chart_kind_include(chart_kind: ChartKind, include_blocks: frozenset[str]) -> None:
+    if chart_kind not in {"natal", "cosmogram"}:
+        raise ValueError("chart_kind must be 'natal' or 'cosmogram'")
+    if chart_kind == "natal" and "houses" not in include_blocks:
+        raise ValueError('chart_kind "natal" requires include block "houses"')
+    if chart_kind == "cosmogram":
+        forbidden = include_blocks & {"houses", "rulers", "strength"}
+        if forbidden:
+            raise ValueError(
+                f'chart_kind "cosmogram" forbids include block(s): {", ".join(sorted(forbidden))}'
+            )
 
 
 def _elapsed_ms(started_at: float) -> float:
@@ -608,7 +651,7 @@ def _additional_signs_in_house(
 def _add_derived_points(
     bodies: dict[str, BodyPosition],
     angles: dict[str, AnglePosition],
-    cusps: tuple[HouseCusp, ...],
+    cusps: tuple[HouseCusp, ...] | None,
     moment_utc: datetime,
     julian_day_ut: float,
     flags: int,
@@ -629,7 +672,7 @@ def _add_derived_points(
             latitude_speed=true_node.latitude_speed,
             distance_speed=true_node.distance_speed,
             retrograde=true_node.retrograde,
-            house=house_for_longitude(longitude, cusps),
+            house=house_for_longitude(longitude, cusps) if cusps is not None else None,
             zodiac=zodiac_position(longitude),
             retflags=true_node.retflags,
         )
@@ -658,7 +701,11 @@ def _add_derived_points(
         method = get_selena_method(selena_method_name)
         selena = method.calculate(julian_day_ut, flags)
         bodies["selena"] = selena.model_copy(
-            update={"house": house_for_longitude(selena.longitude, cusps)}
+            update={
+                "house": house_for_longitude(selena.longitude, cusps)
+                if cusps is not None
+                else None
+            }
         )
         LOGGER.debug(
             "derived_point name=%s method=%s longitude=%.6f house=%s",
@@ -674,7 +721,7 @@ def _add_derived_points(
 def _derived_point(
     name: str,
     longitude: float,
-    cusps: tuple[HouseCusp, ...],
+    cusps: tuple[HouseCusp, ...] | None,
     *,
     source: Literal["derived", "selena"] = "derived",
 ) -> BodyPosition:
@@ -692,7 +739,7 @@ def _derived_point(
         latitude_speed=0.0,
         distance_speed=0.0,
         retrograde=False,
-        house=house_for_longitude(normalized, cusps),
+        house=house_for_longitude(normalized, cusps) if cusps is not None else None,
         zodiac=zodiac_position(normalized),
         retflags=0,
     )

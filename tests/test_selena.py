@@ -56,6 +56,7 @@ def test_mean_perigee_is_exactly_opposite_lilith() -> None:
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         selena_method="mean_perigee",
     )
@@ -81,6 +82,7 @@ def test_selena_strategy_switch_changes_result() -> None:
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         selena_method="mean_perigee",
     )
@@ -88,6 +90,7 @@ def test_selena_strategy_switch_changes_result() -> None:
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         selena_method="true_perigee",
     )
@@ -102,6 +105,7 @@ def test_project_config_selects_true_perigee() -> None:
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
     )
 
