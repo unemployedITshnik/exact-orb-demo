@@ -173,6 +173,7 @@ def test_include_without_configurations_sets_block_to_none() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         include={"positions", "houses", "rulers", "aspects"},
     )
@@ -227,6 +228,7 @@ def _reference_chart():
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=7.0),
         configuration_config=ConfigurationConfig(configuration_max_orb=7.0),

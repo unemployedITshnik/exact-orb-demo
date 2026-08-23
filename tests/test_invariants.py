@@ -28,7 +28,7 @@ ASPECT_ORB = 1.0
 @settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(dt=DATES, latitude=LATITUDES, longitude=LONGITUDES, shift=SHIFTS)
 def test_natal_chart_invariants(dt, latitude: float, longitude: float, shift: float) -> None:
-    chart = get_natal(dt, latitude, longitude, body_ids=DEFAULT_BODY_IDS)
+    chart = get_natal(dt, latitude, longitude, chart_kind="natal", body_ids=DEFAULT_BODY_IDS)
 
     assert abs(sum(_house_arcs(chart.cusps)) - 360.0) < 1e-7
     assert angular_delta_degrees(chart.cusps[6].longitude, chart.cusps[0].longitude + 180.0) < 1e-7

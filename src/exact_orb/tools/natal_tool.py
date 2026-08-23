@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -22,18 +23,16 @@ class NatalToolArgs(BaseModel):
     their ``get_natal()`` defaults until a recipe actually needs to override
     them — adding a field here later is a small, additive change.
 
-    ``include`` is forwarded as-is so a cosmogram recipe (ADR-0008) can pass
-    a reduced block set. ``get_natal()`` does honor this at the output level:
-    passing ``include`` without ``"houses"`` sets ``NatalChart.cusps`` and
-    ``.angles`` to ``None`` (and without ``"rulers"``, ``.house_rulers``/
-    ``.interceptions`` to ``None``). Until the engine exposes an explicit
-    ``chart_kind`` field, ``NatalTool.run`` derives a temporary proxy from
-    that output shape.
+    ``chart_kind`` is explicit: the intent/planner layer decides whether this
+    is a full natal chart or a cosmogram. ``include`` is forwarded as-is so a
+    cosmogram recipe (ADR-0008) can pass a reduced block set without houses,
+    rulers, or strength.
     """
 
     birth_datetime: datetime
     latitude: float
     longitude: float
+    chart_kind: Literal["natal", "cosmogram"]
     house_system: str = "P"
     rulership: str = "combined"
     include: tuple[str, ...] | None = None
@@ -53,7 +52,7 @@ class NatalTool(Tool):
     calculation call happen in-process, with no network involved. A future
     ``RemoteTool`` would satisfy the same ``Tool`` interface over HTTP;
     neither ``ToolRegistry`` nor ``Orchestrator`` would need to change for
-    that swap — only the registration in ``ToolRegistry.from_config()``.
+    that swap — only the registration in ``ToolRegistry.default()``.
     """
 
     name = "natal"
@@ -69,15 +68,14 @@ class NatalTool(Tool):
             birth_datetime=args.birth_datetime,
             latitude=args.latitude,
             longitude=args.longitude,
+            chart_kind=args.chart_kind,
             house_system=args.house_system,
             rulership=args.rulership,
             include=set(args.include) if args.include is not None else None,
         )
-        # Temporary proxy until the engine returns an explicit chart_kind.
-        chart_kind = "natal" if chart.cusps is not None else "cosmogram"
         return ToolResult(
             tool_name=self.name,
             data=chart.model_dump(mode="json"),
             warnings=[f"{warning.source}: {warning.message}" for warning in chart.warnings],
-            meta={"chart_kind": chart_kind},
+            meta={"chart_kind": chart.chart_kind},
         )

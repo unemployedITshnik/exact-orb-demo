@@ -68,7 +68,7 @@ def calculate_bodies(
     julian_day_ut: float,
     body_ids: Mapping[str, int],
     flags: int,
-    cusps: tuple[HouseCusp, ...],
+    cusps: tuple[HouseCusp, ...] | None,
 ) -> tuple[dict[str, BodyPosition], list[CalculationWarning]]:
     bodies: dict[str, BodyPosition] = {}
     warnings: list[CalculationWarning] = []
@@ -108,7 +108,7 @@ def calculate_bodies(
             latitude_speed=xx[4],
             distance_speed=xx[5],
             retrograde=xx[3] < 0.0,
-            house=house_for_longitude(longitude_value, cusps),
+            house=house_for_longitude(longitude_value, cusps) if cusps is not None else None,
             zodiac=zodiac_position(longitude_value),
             retflags=retflags,
         )

@@ -147,6 +147,7 @@ def natal_chart() -> NatalChart:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=7.0),
     )
@@ -226,6 +227,7 @@ def test_get_transits_requires_natal_houses() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include={"positions"},
     )

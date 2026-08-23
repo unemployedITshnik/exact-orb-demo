@@ -25,7 +25,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     @classmethod
-    def from_config(cls) -> "ToolRegistry":
+    def default(cls) -> "ToolRegistry":
         """Build the default registry with every tool wired to its adapter.
 
         Every tool is a ``LocalTool`` today: ``get_natal()`` runs in-process,
@@ -33,8 +33,10 @@ class ToolRegistry:
         ``RemoteTool`` adapter and a per-tool config value
         (``natal = local | http://...``) to choose between them; that
         routing layer is deliberately deferred until a second adapter
-        actually exists to choose between — adding it later only touches
-        this method, not ``ToolRegistry``, ``Orchestrator``, or ``Planner``.
+        actually exists to choose between. When it arrives it will land in a
+        separate config-reading classmethod next to this one — existing
+        registry storage methods, ``Orchestrator``, and ``Planner`` do not
+        have to change for that.
         """
 
         registry = cls()

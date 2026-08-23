@@ -23,6 +23,7 @@ def _chart_for_body(body_name: str):
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         body_ids={body_name: BODY_IDS[body_name]},
     )
@@ -57,6 +58,7 @@ def test_derived_point_longitude_matches_reference(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
     )
 
@@ -78,6 +80,7 @@ def test_angle_longitude_matches_reference(angle_name: str, expected_longitude: 
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
     )
 
@@ -102,6 +105,7 @@ def test_house_cusp_longitude_matches_geocult_reference(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         body_ids={"sun": BODY_IDS["sun"]},
     )

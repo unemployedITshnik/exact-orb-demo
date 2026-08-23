@@ -175,6 +175,7 @@ def test_include_without_strength_sets_block_to_none() -> None:
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         include={"positions", "houses", "rulers", "aspects", "configurations"},
     )
@@ -199,7 +200,7 @@ def test_property_balance_element_and_modality_totals_match(
     latitude: float,
     longitude: float,
 ) -> None:
-    chart = get_natal(dt, latitude, longitude, strength_config=StrengthConfig())
+    chart = get_natal(dt, latitude, longitude, chart_kind="natal", strength_config=StrengthConfig())
     balance = chart.strength.balance
 
     assert sum(item.score for item in balance.elements.values()) == pytest.approx(
@@ -246,7 +247,7 @@ def test_property_interceptions_are_even_oppositional_pairs(
     latitude: float,
     longitude: float,
 ) -> None:
-    chart = get_natal(dt, latitude, longitude)
+    chart = get_natal(dt, latitude, longitude, chart_kind="natal")
     interceptions = chart.interceptions or ()
     sign_indices = {item.sign_index for item in interceptions}
 
@@ -259,6 +260,7 @@ def _reference_chart(config: StrengthConfig):
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
+        chart_kind="natal",
         house_system=REFERENCE["house_system"],
         strength_config=config,
     )
