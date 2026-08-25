@@ -9,7 +9,7 @@ import re
 from exact_orb.engine.aspects import AspectConfig
 from exact_orb.cli import BODY_ORDER, POINT_ORDER, format_human, parse_datetime_input
 from exact_orb.engine.configurations import ConfigurationConfig
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -68,7 +68,7 @@ def test_reference_cli_output_matches_golden_file() -> None:
 
 
 def _reference_output(*, max_aspect_orb: float = 7.0) -> str:
-    chart = get_natal(
+    chart = calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],

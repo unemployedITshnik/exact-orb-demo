@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 
 from .base import Tool
 from .types import ToolRequest, ToolResult
@@ -20,7 +20,7 @@ class NatalToolArgs(BaseModel):
     ``ToolRequest`` for a natal-chart scenario. It intentionally exposes only
     the inputs today's scenarios need. Engine-level tuning knobs
     (``aspect_config``, ``configuration_config``, ``strength_config``) stay at
-    their ``get_natal()`` defaults until a recipe actually needs to override
+    their ``calculate_natal()`` defaults until a recipe actually needs to override
     them — adding a field here later is a small, additive change.
 
     ``chart_kind`` is explicit: the intent/planner layer decides whether this
@@ -46,7 +46,7 @@ class NatalToolArgs(BaseModel):
 
 
 class NatalTool(Tool):
-    """In-process (``LocalTool``) adapter that calls ``get_natal()`` directly.
+    """In-process (``LocalTool``) adapter that calls ``calculate_natal()`` directly.
 
     This satisfies the ``LocalTool`` half of ADR-0002: validation and the
     calculation call happen in-process, with no network involved. A future
@@ -64,7 +64,7 @@ class NatalTool(Tool):
             raise ValueError(f"expected tool_name {self.name!r}, got {request.tool_name!r}")
 
         args = NatalToolArgs.model_validate(request.args)
-        chart = get_natal(
+        chart = calculate_natal(
             birth_datetime=args.birth_datetime,
             latitude=args.latitude,
             longitude=args.longitude,

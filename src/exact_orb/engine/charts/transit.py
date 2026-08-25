@@ -173,7 +173,7 @@ class TransitChart(BaseModel):
     warnings: tuple[CalculationWarning, ...] = ()
 
 
-def get_transits(
+def calculate_transits(
     natal: NatalChart,
     moment: datetime | tuple[datetime, datetime] | TransitDateRange,
     location: TransitLocation | Mapping[str, object] | Sequence[object] | None = None,

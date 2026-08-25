@@ -28,7 +28,7 @@ class ToolRegistry:
     def default(cls) -> "ToolRegistry":
         """Build the default registry with every tool wired to its adapter.
 
-        Every tool is a ``LocalTool`` today: ``get_natal()`` runs in-process,
+        Every tool is a ``LocalTool`` today: ``calculate_natal()`` runs in-process,
         there is nothing to route to yet. ADR-0002 also describes a
         ``RemoteTool`` adapter and a per-tool config value
         (``natal = local | http://...``) to choose between them; that

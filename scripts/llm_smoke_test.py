@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from exact_orb.engine.aspects import AspectConfig
 from exact_orb.cli import BODY_ORDER, POINT_ORDER, format_human, parse_datetime_input
-from exact_orb.engine.ephemeris.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.logging_setup import init_logging
 
 
@@ -180,7 +180,7 @@ def main() -> None:
     init_logging()
 
     parsed = parse_datetime_input(TEST_INPUT)
-    chart = get_natal(
+    chart = calculate_natal(
         parsed.local_datetime,
         TEST_LAT,
         TEST_LON,

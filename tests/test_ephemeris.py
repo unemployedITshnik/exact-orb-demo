@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import (
     ARCSECOND_DEGREES,
     BODY_IDS,
@@ -19,7 +19,7 @@ from tests.helpers import assert_longitude_close
 
 
 def _chart_for_body(body_name: str):
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -54,7 +54,7 @@ def test_derived_point_longitude_matches_reference(
     point_name: str,
     expected_longitude: float,
 ) -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -76,7 +76,7 @@ def test_derived_point_longitude_matches_reference(
     ids=list(EXPECTED_ANGLE_LONGITUDES),
 )
 def test_angle_longitude_matches_reference(angle_name: str, expected_longitude: float) -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -101,7 +101,7 @@ def test_house_cusp_longitude_matches_geocult_reference(
     house: int,
     expected_longitude: float,
 ) -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],

@@ -111,7 +111,7 @@ class NatalChart(BaseModel):
     warnings: tuple[CalculationWarning, ...] = ()
 
 
-def get_natal(
+def calculate_natal(
     birth_datetime: datetime,
     latitude: float,
     longitude: float,
@@ -137,7 +137,7 @@ def get_natal(
 
     started_at = perf_counter()
     LOGGER.debug(
-        "get_natal start chart_kind=%s birth_datetime=%s latitude=%.6f longitude=%.6f house_system=%s "
+        "calculate_natal start chart_kind=%s birth_datetime=%s latitude=%.6f longitude=%.6f house_system=%s "
         "rulership=%s include=%s ephemeris_path=%s",
         chart_kind,
         birth_datetime.isoformat(),
@@ -291,7 +291,7 @@ def get_natal(
         warnings=tuple(warnings),
     )
     LOGGER.debug(
-        "get_natal complete duration_ms=%.3f bodies=%s aspects=%s configurations=%s strength=%s warnings=%d",
+        "calculate_natal complete duration_ms=%.3f bodies=%s aspects=%s configurations=%s strength=%s warnings=%d",
         _elapsed_ms(started_at),
         len(chart.bodies or {}),
         len(chart.aspects or ()),

@@ -7,7 +7,7 @@
 `engine/ephemeris/natal.py` (33 КБ) держит одновременно два слоя: низкоуровневые
 примитивы эфемерид (модели позиций, домов, углов, расчёт тел через `swisseph`,
 таблицы управителей, нормализация градусов, юлианские дни) и оркестрацию именно
-натальной карты (`get_natal`, `NatalChart`, интерцепции, управители домов).
+натальной карты (`calculate_natal`, `NatalChart`, интерцепции, управители домов).
 
 Файл уже негласно работает общим ядром: `charts/transit.py`, `ephemeris/points.py`
 и `ephemeris/selena.py` импортируют из него примитивы, включая приватные имена
@@ -22,7 +22,7 @@
 Разделить файл на два:
 
 - `engine/ephemeris/core` — примитивы, ничего не знающие о натальной карте как о технике;
-- `engine/charts/natal.py` — `get_natal()`, `NatalChart` и связанные типы.
+- `engine/charts/natal.py` — `calculate_natal()`, `NatalChart` и связанные типы.
 
 `points.py`, `selena.py`, `transit.py` импортируют примитивы из `core`.
 `transit.py` получает `NatalChart` от соседа по пакету `charts`.

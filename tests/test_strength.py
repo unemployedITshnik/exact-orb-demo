@@ -8,7 +8,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 import pytest
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.strength import StrengthConfig
 from exact_orb.engine.strength.dispositors import calculate_dispositor_chains
 from exact_orb.engine.strength.lunar_phase import PHASE_NAMES, calculate_lunar_phase
@@ -171,7 +171,7 @@ def test_interceptions_are_separated_for_json_consumers() -> None:
 
 
 def test_include_without_strength_sets_block_to_none() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -200,7 +200,7 @@ def test_property_balance_element_and_modality_totals_match(
     latitude: float,
     longitude: float,
 ) -> None:
-    chart = get_natal(dt, latitude, longitude, chart_kind="natal", strength_config=StrengthConfig())
+    chart = calculate_natal(dt, latitude, longitude, chart_kind="natal", strength_config=StrengthConfig())
     balance = chart.strength.balance
 
     assert sum(item.score for item in balance.elements.values()) == pytest.approx(
@@ -247,7 +247,7 @@ def test_property_interceptions_are_even_oppositional_pairs(
     latitude: float,
     longitude: float,
 ) -> None:
-    chart = get_natal(dt, latitude, longitude, chart_kind="natal")
+    chart = calculate_natal(dt, latitude, longitude, chart_kind="natal")
     interceptions = chart.interceptions or ()
     sign_indices = {item.sign_index for item in interceptions}
 
@@ -256,7 +256,7 @@ def test_property_interceptions_are_even_oppositional_pairs(
 
 
 def _reference_chart(config: StrengthConfig):
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],

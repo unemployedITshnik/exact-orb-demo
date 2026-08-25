@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 import pytest
 
 from exact_orb.engine.aspects import AspectCategory, AspectConfig, PositionedPoint, find_aspects
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -135,7 +135,7 @@ def test_single_set_aspects_are_symmetric_records_not_duplicates() -> None:
 
 
 def test_max_orb_boundary_filters_moon_jupiter_sextile() -> None:
-    tight_chart = get_natal(
+    tight_chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -143,7 +143,7 @@ def test_max_orb_boundary_filters_moon_jupiter_sextile() -> None:
         house_system=REFERENCE["house_system"],
         aspect_config=AspectConfig.natal(max_orb=1.0),
     )
-    loose_chart = get_natal(
+    loose_chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -186,7 +186,7 @@ def test_same_point_does_not_aspect_itself() -> None:
 
 
 def test_include_without_aspects_sets_block_to_none() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -267,7 +267,7 @@ def test_property_zero_max_orb_returns_no_aspects() -> None:
 
 
 def _reference_chart():
-    return get_natal(
+    return calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
