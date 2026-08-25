@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.calc import house_for_longitude
 from tests.fixtures.natal_1985 import BODY_IDS, EXPECTED_BODY_HOUSES, REFERENCE
 
 
 def _chart_for_body(body_name: str):
     if body_name in BODY_IDS:
-        return get_natal(
+        return calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -19,7 +19,7 @@ def _chart_for_body(body_name: str):
             house_system=REFERENCE["house_system"],
             body_ids={body_name: BODY_IDS[body_name]},
         )
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -40,7 +40,7 @@ def test_body_house_matches_geocult_reference(body_name: str, expected_house: in
 
 
 def test_longitude_exactly_on_cusp_belongs_to_house_starting_at_that_cusp() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],

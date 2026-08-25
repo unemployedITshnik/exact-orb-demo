@@ -14,7 +14,7 @@ from typing import Iterable, Sequence
 
 from .engine.aspects import Aspect as CalculatedAspect
 from .engine.aspects import AspectCategory, AspectConfig
-from .engine.charts.natal import NatalChart, get_natal
+from .engine.charts.natal import NatalChart, calculate_natal
 from .engine.configurations import Configuration as CalculatedConfiguration
 from .engine.configurations import ConfigurationCategory
 from .engine.ephemeris.types import RulershipScheme, ZodiacPosition
@@ -260,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.max_aspect_orb,
         )
         include = {"positions", "houses", "rulers"} if args.no_aspects else None
-        chart = get_natal(
+        chart = calculate_natal(
             parsed.local_datetime,
             args.lat,
             args.lon,

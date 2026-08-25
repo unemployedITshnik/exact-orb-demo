@@ -21,7 +21,7 @@ from exact_orb.engine.configurations import (
     ConfigurationType,
     find_configurations,
 )
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -169,7 +169,7 @@ def test_empty_configuration_input_returns_empty_list() -> None:
 
 
 def test_include_without_configurations_sets_block_to_none() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -224,7 +224,7 @@ def test_property_configuration_edges_are_present_in_input(aspects: list[Aspect]
 
 
 def _reference_chart():
-    return get_natal(
+    return calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],

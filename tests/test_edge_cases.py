@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.calc import (
     house_for_longitude,
     normalize_degrees,
@@ -20,7 +20,7 @@ from tests.fixtures.natal_1985 import BODY_IDS, EXPECTED_RETROGRADE, REFERENCE
 
 def test_high_latitude_placidus_raises_clear_error() -> None:
     with pytest.raises(ValueError, match="Placidus degenerates"):
-        get_natal(
+        calculate_natal(
             datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
             67.0,
             37.6155,
@@ -54,7 +54,7 @@ def test_longitude_normalization_near_zero_and_full_circle() -> None:
     ids=list(EXPECTED_RETROGRADE),
 )
 def test_retrograde_flag_matches_reference(body_name: str, expected_retrograde: bool) -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],

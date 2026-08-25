@@ -29,7 +29,7 @@ box "ИНСТРУМЕНТЫ" #E8F5E9
 end box
 
 box "РАСЧЁТ" #E8F5E9
-  control "EngineService\nget_natal()" as Engine
+  control "EngineService\ncalculate_natal()" as Engine
 end box
 
 box "ИЗЛОЖЕНИЕ" #E8F5E9
@@ -94,7 +94,7 @@ activate Cache
 Cache --> NatalTool : промах
 deactivate Cache
 
-NatalTool -> Engine : get_natal(utc, lat, lon, ...)
+NatalTool -> Engine : calculate_natal(utc, lat, lon, ...)
 activate Engine
 Engine --x NatalTool : таймаут / отказ соединения\n(RemoteTool) или необработанное\nисключение движка (LocalTool)
 deactivate Engine

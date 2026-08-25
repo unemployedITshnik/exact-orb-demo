@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import EXPECTED_BODY_LONGITUDES, REFERENCE
 
 
@@ -14,7 +14,7 @@ ANGLE_DERIVED_POINTS = {"asc", "mc", "dsc", "ic", "vertex", "pars", "pars_fortun
 
 
 def _reference_natal():
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -24,7 +24,7 @@ def _reference_natal():
 
 
 def _reference_cosmogram(include: set[str] | None = None):
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -108,7 +108,7 @@ def test_cosmogram_include_has_no_angle_aspects() -> None:
 def test_cosmogram_is_stable_across_time_of_day() -> None:
     """Unknown birth time must not leak through house-derived values."""
 
-    morning = get_natal(
+    morning = calculate_natal(
         datetime(1985, 9, 1, 9, 0, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -116,7 +116,7 @@ def test_cosmogram_is_stable_across_time_of_day() -> None:
         house_system=REFERENCE["house_system"],
         include={"positions", "aspects", "configurations"},
     )
-    evening = get_natal(
+    evening = calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -133,7 +133,7 @@ def test_cosmogram_is_stable_across_time_of_day() -> None:
 
 def test_rulers_without_houses_raises() -> None:
     with pytest.raises(ValueError, match=r"(?=.*rulers)(?=.*houses)"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -145,7 +145,7 @@ def test_rulers_without_houses_raises() -> None:
 
 def test_strength_without_houses_raises() -> None:
     with pytest.raises(ValueError, match=r"(?=.*strength)(?=.*houses)"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -157,7 +157,7 @@ def test_strength_without_houses_raises() -> None:
 
 def test_natal_chart_kind_requires_houses() -> None:
     with pytest.raises(ValueError, match=r"(?=.*chart_kind)(?=.*houses)"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -169,7 +169,7 @@ def test_natal_chart_kind_requires_houses() -> None:
 
 def test_cosmogram_chart_kind_rejects_houses() -> None:
     with pytest.raises(ValueError, match=r"(?=.*chart_kind)(?=.*houses)"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -178,7 +178,7 @@ def test_cosmogram_chart_kind_rejects_houses() -> None:
         )
 
     with pytest.raises(ValueError, match=r"(?=.*chart_kind)(?=.*houses)"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             REFERENCE["latitude"],
             REFERENCE["longitude"],
@@ -189,7 +189,7 @@ def test_cosmogram_chart_kind_rejects_houses() -> None:
 
 
 def test_positions_only_works_beyond_polar_circle() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         REFERENCE["datetime_utc"],
         78.0,
         REFERENCE["longitude"],
@@ -204,7 +204,7 @@ def test_positions_only_works_beyond_polar_circle() -> None:
 
 def test_default_include_still_fails_beyond_polar_circle() -> None:
     with pytest.raises(ValueError, match="Placidus|latitude"):
-        get_natal(
+        calculate_natal(
             REFERENCE["datetime_utc"],
             78.0,
             REFERENCE["longitude"],

@@ -35,7 +35,7 @@
     Событие `status`: «считаю карту».
 12. **ToolRegistry** отдаёт адаптер (`LocalTool` или `RemoteTool` — по конфигурации).
 13. **Tool** проверяет **Calculation Cache** по хэшу параметров — промах.
-14. **Tool** → **EngineService** `get_natal()`: эфемериды, дома и углы, тела,
+14. **Tool** → **EngineService** `calculate_natal()`: эфемериды, дома и углы, тела,
     производные точки (Южный узел, Парс Фортуны, Селена), управители домов
     и интерцепции, аспекты → конфигурации → сила.
 15. Результат кладётся в кэш. `ToolResult`: `chart_kind = "natal"`, предупреждений нет.
@@ -89,7 +89,7 @@
 13. **Planner** сопоставляет контракт со сценарием **`cosmogram`**, а не `natal`:
     `tools = [natal]` с `include` без `houses` и `rulers`;
     `topics = [{natal, recipe: cosmogram.general, mode: full}]`.
-14. **Tool** → тот же `get_natal()`, тот же адаптер — отличаются только аргументы.
+14. **Tool** → тот же `calculate_natal()`, тот же адаптер — отличаются только аргументы.
     `ToolResult`: `chart_kind = "cosmogram"`,
     `warnings = [time_unknown, moon_sign_ambiguous?]`.
 15. **DataSelector** отбирает планеты в знаках, аспекты и конфигурации; домов

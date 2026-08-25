@@ -191,7 +191,7 @@ IntentService.understand(text, context) -> ResolvedContract
 интерфейсом стратегии. После переноса импортируют примитивы из `core`, а не из `natal`.
 **Статус:** реализовано.
 
-**`engine/charts/natal.py`** — `get_natal()` и `NatalChart`: оркестрация натальной
+**`engine/charts/natal.py`** — `calculate_natal()` и `NatalChart`: оркестрация натальной
 карты. Добавляется явное поле `chart_kind` и поддержка космограммы через `include`.
 
 Механика `include` — **белый список**, а не исключение: передаётся набор нужных
@@ -202,7 +202,7 @@ strength}`, незнакомые имена дают `ValueError`, а невкл
 `include = {positions, aspects, configurations}`.
 **Статус:** требует переноса из `ephemeris` в `charts`.
 
-**`engine/charts/transit.py`** — `get_transits(natal, moment, location?)`.
+**`engine/charts/transit.py`** — `calculate_transits(natal, moment, location?)`.
 Принимает готовый натал: отсюда зависимость `[natal, transit]` в сценарии.
 **Статус:** реализовано.
 
@@ -368,7 +368,7 @@ kwargs, нормализация в `LLMResponse`, вычищение секре
 ## 9. Открытые вопросы
 
 - Место синастрии: `engine/charts` или отдельный слой сравнения карт.
-- Работоспособность связки космограмма + транзиты: сейчас `get_transits` требует дома.
+- Работоспособность связки космограмма + транзиты: сейчас `calculate_transits` требует дома.
   Договорённость — смотреть аспекты транзитов к точкам космограммы с акцентом на
   медленные планеты; техническая реализация не проработана.
 - Как именно Planner сопоставляет контракт со сценарием и что делать при нескольких

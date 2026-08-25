@@ -8,7 +8,7 @@ import pytest
 import swisseph as swe
 
 from exact_orb.config import configure_ephemeris
-from exact_orb.engine.charts.natal import get_natal
+from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.selena import SELENA_METHODS, get_selena_method
 from tests.fixtures.natal_1985 import BODY_IDS, REFERENCE
 from tests.fixtures.selena_1985 import DATETIME_UTC, EXPECTED_SELENA, JULIAN_DAY_UT
@@ -52,7 +52,7 @@ def test_selena_strategy_matches_golden_value(method_name: str, expected_longitu
 
 def test_mean_perigee_is_exactly_opposite_lilith() -> None:
     configure_ephemeris()
-    chart = get_natal(
+    chart = calculate_natal(
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -78,7 +78,7 @@ def test_selena_result_is_normalized(method_name: str) -> None:
 
 
 def test_selena_strategy_switch_changes_result() -> None:
-    mean_chart = get_natal(
+    mean_chart = calculate_natal(
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -86,7 +86,7 @@ def test_selena_strategy_switch_changes_result() -> None:
         house_system=REFERENCE["house_system"],
         selena_method="mean_perigee",
     )
-    true_chart = get_natal(
+    true_chart = calculate_natal(
         DATETIME_UTC,
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -101,7 +101,7 @@ def test_selena_strategy_switch_changes_result() -> None:
 
 
 def test_project_config_selects_true_perigee() -> None:
-    chart = get_natal(
+    chart = calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],
         REFERENCE["longitude"],

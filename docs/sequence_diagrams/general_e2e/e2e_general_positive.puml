@@ -34,7 +34,7 @@ box "ИНСТРУМЕНТЫ" #E8F5E9
 end box
 
 box "РАСЧЁТ" #E8F5E9
-  control "EngineService\nget_natal()" as Engine
+  control "EngineService\ncalculate_natal()" as Engine
 end box
 
 box "ИЗЛОЖЕНИЕ" #E8F5E9
@@ -136,7 +136,7 @@ else данных достаточно
   Cache --> NatalTool : промах
   deactivate Cache
 
-  NatalTool -> Engine : get_natal(utc, lat, lon,\nhouse_system, rulership, include)
+  NatalTool -> Engine : calculate_natal(utc, lat, lon,\nhouse_system, rulership, include)
   activate Engine
   Engine -> Engine : дома и углы, тела,\nпроизводные точки, управители,\nаспекты → конфигурации → сила
   Engine --> NatalTool : NatalChart\nchart_kind="natal" + warnings

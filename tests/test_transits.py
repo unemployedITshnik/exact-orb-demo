@@ -9,7 +9,7 @@ restricted to the ten bodies exact-orb treats as "transiting"
 (``TRANSIT_BODY_IDS``: Sun through Pluto, no Chiron/nodes/Lilith/Selena/
 Vertex/angles as *sources*, though all of those remain valid *targets*).
 
-This gives us an externally-verified oracle for ``get_transits`` without
+This gives us an externally-verified oracle for ``calculate_transits`` without
 needing a second geocult.ru date: every orb below was cross-checked against
 the natal reference table for
 ``1985-09-01 20:45 UTC, Moscow (55.7522N, 37.6155E), Placidus``
@@ -18,7 +18,7 @@ https://geocult.ru/natalnaya-karta-onlayn-raschet?fd=2&fm=9&fy=1985&fh=0&fmn=45&
 A few of geocult's natal aspects exceed exact-orb's transit orb ceiling
 (``_default_transit_orbs`` hard-caps every transit aspect at 6 degrees,
 tighter still for fictitious points), so they are intentionally absent from
-``get_transits`` output; ``test_self_transit_orb_hard_capped_below_six_degrees``
+``calculate_transits`` output; ``test_self_transit_orb_hard_capped_below_six_degrees``
 documents that on purpose instead of leaving it as an unexplained gap.
 """
 
@@ -35,9 +35,9 @@ from exact_orb.engine.charts.transit import (
     TransitChart,
     TransitDateRange,
     TransitLocation,
-    get_transits,
+    calculate_transits,
 )
-from exact_orb.engine.charts.natal import NatalChart, get_natal
+from exact_orb.engine.charts.natal import NatalChart, calculate_natal
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -126,7 +126,7 @@ EXPECTED_TRANSIT_ASPECTS: dict[tuple[str, str, str], float] = {
 
 # Real natal aspects (see tests/test_aspects.py::EXPECTED_ASPECTS) whose orb
 # exceeds the 6-degree transit ceiling baked into
-# exact_orb.engine.aspects.types._default_transit_orbs. get_transits must not
+# exact_orb.engine.aspects.types._default_transit_orbs. calculate_transits must not
 # report these, regardless of the max_orb argument passed in, because the
 # per-aspect/per-body caps in that default table are independent of the
 # top-level ceiling.
@@ -143,7 +143,7 @@ EXCLUDED_BY_TRANSIT_ORB_CAP = (
 
 @pytest.fixture(scope="module")
 def natal_chart() -> NatalChart:
-    return get_natal(
+    return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -157,7 +157,7 @@ def natal_chart() -> NatalChart:
 def self_transit(natal_chart: NatalChart) -> TransitChart:
     """Transits calculated at the exact natal moment (see module docstring)."""
 
-    return get_transits(
+    return calculate_transits(
         natal_chart,
         REFERENCE["datetime_utc"],
         max_orb=10.0,
@@ -187,7 +187,7 @@ def test_self_transit_matches_geocult_reference(
     lookup = _lookup(self_transit)
     key = (transit_body, aspect_type, natal_target)
 
-    assert key in lookup, f"expected aspect {key} missing from get_transits() output"
+    assert key in lookup, f"expected aspect {key} missing from calculate_transits() output"
     assert round(lookup[key], 2) == expected_orb
 
 
@@ -222,8 +222,8 @@ def test_transiting_body_is_conjunct_its_own_natal_position(
         assert lookup[key] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_get_transits_requires_natal_houses() -> None:
-    bare_natal = get_natal(
+def test_calculate_transits_requires_natal_houses() -> None:
+    bare_natal = calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
         REFERENCE["longitude"],
@@ -233,26 +233,26 @@ def test_get_transits_requires_natal_houses() -> None:
     )
 
     with pytest.raises(ValueError, match="natal chart must include houses"):
-        get_transits(bare_natal, REFERENCE["datetime_utc"])
+        calculate_transits(bare_natal, REFERENCE["datetime_utc"])
 
 
-def test_get_transits_rejects_negative_max_orb(natal_chart: NatalChart) -> None:
+def test_calculate_transits_rejects_negative_max_orb(natal_chart: NatalChart) -> None:
     with pytest.raises(ValueError, match="max_orb must be non-negative"):
-        get_transits(natal_chart, REFERENCE["datetime_utc"], max_orb=-1.0)
+        calculate_transits(natal_chart, REFERENCE["datetime_utc"], max_orb=-1.0)
 
 
-def test_get_transits_rejects_negative_station_aspect_orb(natal_chart: NatalChart) -> None:
+def test_calculate_transits_rejects_negative_station_aspect_orb(natal_chart: NatalChart) -> None:
     with pytest.raises(ValueError, match="station_aspect_orb must be non-negative"):
-        get_transits(natal_chart, REFERENCE["datetime_utc"], station_aspect_orb=-1.0)
+        calculate_transits(natal_chart, REFERENCE["datetime_utc"], station_aspect_orb=-1.0)
 
 
-def test_get_transits_rejects_negative_exact_window_months(natal_chart: NatalChart) -> None:
+def test_calculate_transits_rejects_negative_exact_window_months(natal_chart: NatalChart) -> None:
     with pytest.raises(ValueError, match="exact_window_months must be non-negative"):
-        get_transits(natal_chart, REFERENCE["datetime_utc"], exact_window_months=-1)
+        calculate_transits(natal_chart, REFERENCE["datetime_utc"], exact_window_months=-1)
 
 
-def test_get_transits_with_location_returns_transit_houses(natal_chart: NatalChart) -> None:
-    chart = get_transits(
+def test_calculate_transits_with_location_returns_transit_houses(natal_chart: NatalChart) -> None:
+    chart = calculate_transits(
         natal_chart,
         REFERENCE["datetime_utc"],
         location=(REFERENCE["latitude"], REFERENCE["longitude"], REFERENCE["house_system"]),
@@ -266,8 +266,8 @@ def test_get_transits_with_location_returns_transit_houses(natal_chart: NatalCha
     assert "asc" in chart.angles
 
 
-def test_get_transits_without_location_omits_transit_houses(natal_chart: NatalChart) -> None:
-    chart = get_transits(
+def test_calculate_transits_without_location_omits_transit_houses(natal_chart: NatalChart) -> None:
+    chart = calculate_transits(
         natal_chart,
         REFERENCE["datetime_utc"],
         max_orb=10.0,
@@ -291,7 +291,7 @@ def test_get_transits_without_location_omits_transit_houses(natal_chart: NatalCh
 
 
 def test_exact_dates_and_closest_approach_are_self_consistent(natal_chart: NatalChart) -> None:
-    chart = get_transits(
+    chart = calculate_transits(
         natal_chart,
         REFERENCE["datetime_utc"],
         body_ids={"sun": swe.SUN},  # keep the scan to one fast body
