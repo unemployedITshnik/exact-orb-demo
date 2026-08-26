@@ -7,8 +7,9 @@ import logging
 from math import isfinite
 from typing import Mapping
 
-import swisseph as swe
+from exact_orb import swiss_backend
 
+from .runtime import require_ephemeris_session
 from .types import (
     ANGLE_INDICES,
     COMBINED_RULERS,
@@ -55,13 +56,20 @@ def to_utc(value: datetime) -> datetime:
 
 
 def julian_day_ut(value: datetime) -> float:
+    require_ephemeris_session()
     hour = (
         value.hour
         + value.minute / 60.0
         + value.second / 3600.0
         + value.microsecond / 3_600_000_000.0
     )
-    return swe.julday(value.year, value.month, value.day, hour, swe.GREG_CAL)
+    return swiss_backend.swe.julday(
+        value.year,
+        value.month,
+        value.day,
+        hour,
+        swiss_backend.swe.GREG_CAL,
+    )
 
 
 def calculate_bodies(
@@ -74,16 +82,17 @@ def calculate_bodies(
     warnings: list[CalculationWarning] = []
 
     for name, body_id in body_ids.items():
+        require_ephemeris_session()
         try:
-            xx, retflags, warning = swe.calc_ut(julian_day_ut, body_id, flags)
-        except swe.Error as exc:
+            xx, retflags, warning = swiss_backend.swe.calc_ut(julian_day_ut, body_id, flags)
+        except swiss_backend.swe.Error as exc:
             raise RuntimeError(
                 f"could not calculate body {name!r} (swe id {body_id}) "
                 f"for Julian day UT {julian_day_ut}: {exc}"
             ) from exc
         if len(xx) != 6:
             raise RuntimeError(f"swe.calc_ut returned {len(xx)} values for {name}, expected 6")
-        if not retflags & swe.FLG_SPEED:
+        if not retflags & swiss_backend.swe.FLG_SPEED:
             raise RuntimeError(f"swe.calc_ut did not return speed values for {name}")
 
         longitude_value = normalize_degrees(xx[0])
@@ -132,9 +141,16 @@ def calculate_houses(
     longitude: float,
     house_system: bytes,
 ) -> tuple[tuple[HouseCusp, ...], dict[str, AnglePosition]]:
+    require_ephemeris_session()
     try:
-        raw_cusps, raw_ascmc = swe.houses_ex(julian_day_ut, latitude, longitude, house_system, 0)
-    except swe.Error as exc:
+        raw_cusps, raw_ascmc = swiss_backend.swe.houses_ex(
+            julian_day_ut,
+            latitude,
+            longitude,
+            house_system,
+            0,
+        )
+    except swiss_backend.swe.Error as exc:
         house_system_name = house_system.decode("ascii", errors="replace")
         raise ValueError(
             f"could not calculate house cusps for system {house_system_name!r} "

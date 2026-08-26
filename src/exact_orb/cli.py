@@ -18,6 +18,7 @@ from .engine.charts.natal import NatalChart, calculate_natal
 from .engine.configurations import Configuration as CalculatedConfiguration
 from .engine.configurations import ConfigurationCategory
 from .engine.ephemeris.types import RulershipScheme, ZodiacPosition
+from .config import configure_ephemeris
 from .logging_setup import init_logging
 
 
@@ -227,7 +228,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     argv_for_log = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(argv)
-    init_logging(ephemeris_path=args.ephe_path, house_system_default=DEFAULT_HOUSE_SYSTEM)
+    try:
+        ephemeris_status = configure_ephemeris(args.ephe_path)
+    except Exception as exc:
+        sys.stderr.write("exact-orb: %s\n" % exc)
+        return 2
+    init_logging(ephemeris_status=ephemeris_status, house_system_default=DEFAULT_HOUSE_SYSTEM)
     started_at = perf_counter()
 
     input_text = " ".join(args.input).strip()

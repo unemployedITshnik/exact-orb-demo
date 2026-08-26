@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-import swisseph as swe
+from exact_orb import swiss_backend
 
 from exact_orb.config import SelenaMethodName
 
 from .calc import normalize_degrees, zodiac_position
+from .runtime import require_ephemeris_session
 from .types import BodyPosition
 
 
@@ -44,7 +45,7 @@ class MeanPerigeeSelena:
     """
 
     name = "mean_perigee"
-    apogee_id = swe.MEAN_APOG
+    apogee_id = swiss_backend.swe.MEAN_APOG
 
     def calculate(self, jd: float, flags: int) -> BodyPosition:
         return _calculate_perigee_selena(jd, flags, self.name, self.apogee_id)
@@ -64,7 +65,7 @@ class TruePerigeeSelena:
     """
 
     name = "true_perigee"
-    apogee_id = swe.OSCU_APOG
+    apogee_id = swiss_backend.swe.OSCU_APOG
 
     def calculate(self, jd: float, flags: int) -> BodyPosition:
         return _calculate_perigee_selena(jd, flags, self.name, self.apogee_id)
@@ -88,7 +89,8 @@ def _calculate_perigee_selena(
     method_name: str,
     apogee_id: int,
 ) -> BodyPosition:
-    xx, retflags, warning = swe.calc_ut(jd, apogee_id, flags)
+    require_ephemeris_session()
+    xx, retflags, warning = swiss_backend.swe.calc_ut(jd, apogee_id, flags)
     if len(xx) != 6:
         raise RuntimeError(f"swe.calc_ut returned {len(xx)} values for Selena apogee, expected 6")
     if warning:

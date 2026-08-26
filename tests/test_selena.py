@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 import pytest
 import swisseph as swe
 
-from exact_orb.config import configure_ephemeris
 from exact_orb.engine.charts.natal import calculate_natal
+from exact_orb.engine.ephemeris.runtime import ephemeris_session
 from exact_orb.engine.ephemeris.selena import SELENA_METHODS, get_selena_method
 from tests.fixtures.natal_1985 import BODY_IDS, REFERENCE
 from tests.fixtures.selena_1985 import DATETIME_UTC, EXPECTED_SELENA, JULIAN_DAY_UT
@@ -20,11 +20,11 @@ FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
 @pytest.mark.parametrize("method_name", EXPECTED_SELENA, ids=list(EXPECTED_SELENA))
 def test_selena_strategy_is_reproducible(method_name: str) -> None:
-    configure_ephemeris()
     method = get_selena_method(method_name)
 
-    first = method.calculate(JULIAN_DAY_UT, FLAGS)
-    second = method.calculate(JULIAN_DAY_UT, FLAGS)
+    with ephemeris_session():
+        first = method.calculate(JULIAN_DAY_UT, FLAGS)
+        second = method.calculate(JULIAN_DAY_UT, FLAGS)
 
     assert first.longitude == second.longitude
     assert first.longitude_speed == second.longitude_speed
@@ -37,10 +37,10 @@ def test_selena_strategy_is_reproducible(method_name: str) -> None:
     ids=list(EXPECTED_SELENA),
 )
 def test_selena_strategy_matches_golden_value(method_name: str, expected_longitude: float) -> None:
-    configure_ephemeris()
     method = get_selena_method(method_name)
 
-    result = method.calculate(JULIAN_DAY_UT, FLAGS)
+    with ephemeris_session():
+        result = method.calculate(JULIAN_DAY_UT, FLAGS)
 
     assert_longitude_close(
         result.longitude,
@@ -51,7 +51,6 @@ def test_selena_strategy_matches_golden_value(method_name: str, expected_longitu
 
 
 def test_mean_perigee_is_exactly_opposite_lilith() -> None:
-    configure_ephemeris()
     chart = calculate_natal(
         DATETIME_UTC,
         REFERENCE["latitude"],
@@ -69,10 +68,10 @@ def test_mean_perigee_is_exactly_opposite_lilith() -> None:
 
 @pytest.mark.parametrize("method_name", EXPECTED_SELENA, ids=list(EXPECTED_SELENA))
 def test_selena_result_is_normalized(method_name: str) -> None:
-    configure_ephemeris()
     method = get_selena_method(method_name)
 
-    result = method.calculate(JULIAN_DAY_UT, FLAGS)
+    with ephemeris_session():
+        result = method.calculate(JULIAN_DAY_UT, FLAGS)
 
     assert 0.0 <= result.longitude < 360.0
 
