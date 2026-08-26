@@ -16,7 +16,7 @@ import time
 from typing import Literal
 import uuid
 
-from exact_orb.config import EphemerisStatus, read_exact_orb_pyproject_value, resolve_ephemeris_status
+from exact_orb.config import EphemerisStatus, read_exact_orb_pyproject_value
 
 
 LOGGER = logging.getLogger(__name__)
@@ -221,10 +221,10 @@ class UTCSizeRotatingFileHandler(BaseRotatingHandler):
 
 def init_logging(
     *,
+    ephemeris_status: EphemerisStatus,
     log_level: str | int | None = None,
     log_dir: str | os.PathLike[str] | None = None,
     log_max_bytes: int | str | None = None,
-    ephemeris_path: str | os.PathLike[str] | None = None,
     house_system_default: str = "P",
     force: bool = False,
 ) -> LoggingState:
@@ -237,7 +237,6 @@ def init_logging(
         log_dir=log_dir,
         log_max_bytes=log_max_bytes,
     )
-    ephemeris_status = resolve_ephemeris_status(ephemeris_path)
     requested_state = LoggingState(
         settings=settings,
         file_logging=True,

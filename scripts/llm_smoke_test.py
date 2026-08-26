@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from exact_orb.engine.aspects import AspectConfig
 from exact_orb.cli import BODY_ORDER, POINT_ORDER, format_human, parse_datetime_input
+from exact_orb.config import configure_ephemeris
 from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.logging_setup import init_logging
 
@@ -177,13 +178,15 @@ def main() -> None:
             "Задайте переменную окружения и запустите снова."
         )
 
-    init_logging()
+    ephemeris_status = configure_ephemeris()
+    init_logging(ephemeris_status=ephemeris_status)
 
     parsed = parse_datetime_input(TEST_INPUT)
     chart = calculate_natal(
         parsed.local_datetime,
         TEST_LAT,
         TEST_LON,
+        chart_kind="natal",
         aspect_config=AspectConfig.natal(max_orb=MAX_ASPECT_ORB),
     )
     chart_text = format_human(
