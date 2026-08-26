@@ -1,0 +1,182 @@
+@startuml
+title exact-orb — высокоуровневая архитектура MVP
+
+left to right direction
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam linetype ortho
+skinparam DefaultFontSize 13
+skinparam ArrowFontSize 11
+skinparam nodesep 42
+skinparam ranksep 48
+
+skinparam component {
+  BorderColor #64748B
+  FontColor #0F172A
+}
+
+skinparam database {
+  BorderColor #15803D
+  FontColor #0F172A
+}
+
+actor "Пользователь" as User
+
+
+component "<b>Клиент</b>\nФорма данных рождения\nУправление картами\nОтрисовка и preset-интерпретации" as Client #DBEAFE
+
+
+component "<b>API и сессия</b>\nFastAPI, DTO, JSON / SSE\nHttpOnly session cookie\nTransport rate limiting" as API #EDE9FE
+
+
+component "<b>Прикладная координация</b>\nOrchestrator + явные use cases\nBuild base / Build derived\nSet active view / Interpret preset" as App #FFEDD5
+
+
+component "<b>Детерминированное ядро</b>\nResolve и validate входных данных\nPlan и execute tools\nChart artifact resolution\nCalculation Engine Port" as Core #FFF7CC
+
+
+component "<b>Слой интерпретации</b>\nОтбор Evidence\nСборка одного PromptBundle\nLLM Gateway + Output Guard" as Interpretation #F2D4CA
+
+
+cloud "<b>LLM Provider</b>\nТолько формулирует ответ" as LLM #E5E7EB
+
+
+database "<b>Сессионное состояние и caches</b>\nSessionProfile с TTL\nbirth_input + birth_resolved\nbase / derived ChartSpec + active_view\nCalculation и preset interpretation caches" as State #D1FAE5
+
+
+component "<b>Сквозные контроли</b>\nCapabilities и Policy\nQuota / global budget\nRedacted observability" as Controls #FCE7F3
+
+
+package "POST-MVP: NL / subscription extension" as Future #F8FAFC {
+
+  component "<b>Free-form understanding</b>\nInput Guard + Intent Service\nCapability / query policy\nFreeForm replay protection" as NL #E5E7EB
+}
+
+
+' Основной MVP-поток
+
+User -[#2563EB]-> Client
+
+Client -[#2563EB]-> API : typed commands
+
+API -[#2563EB]-> App : validated request\n+ session_id
+
+
+' Состояние
+
+App <-[#2E7D32]-> State : session load / save
+
+
+' Детерминированный расчётный контур
+
+App -[#2563EB]-> Core : calculate or obtain\nchart data
+
+Core -[#00838F]-> App : ChartArtifacts\n/ ToolResults
+
+Core -[#2E7D32]-> State : calculation cache
+
+
+' Интерпретационный контур
+
+App -[#2563EB]-> Interpretation : preset plan\n+ ToolResults
+
+Interpretation -[#EF6C00]-> LLM : one PromptBundle
+
+LLM -[#00838F]-> Interpretation : token stream
+
+Interpretation -[#00838F]-> App : safe response stream
+
+Interpretation -[#2E7D32]-> State : preset cache
+
+
+' Возврат результата
+
+App -[#00838F]-> API : JSON / SSE
+
+API -[#00838F]-> Client
+
+
+' Сквозные контроли
+
+Controls -[#64748B,dashed]-> API
+
+Controls -[#64748B,dashed]-> App
+
+Controls -[#64748B,dashed]-> Core
+
+Controls -[#64748B,dashed]-> Interpretation
+
+
+' Отложенное NL-расширение
+
+API -[#7E57C2,dashed]-> NL : free-form question
+
+NL -[#7E57C2,dashed]-> App : typed ResolvedContract
+
+NL -[#7E57C2,dashed]-> Interpretation : authorized query data
+
+
+note bottom of Core
+<b>Вероятностное — только по краям.</b>
+
+В MVP вход типизирован формой
+и пользовательскими controls.
+
+Расчёты, планирование и отбор
+фактов детерминированы.
+
+Engine может исполняться local
+или remote через port / adapter.
+end note
+
+
+note bottom of App
+SessionProfile меняют только
+явные команды:
+
+• Build base
+• Build derived
+• Set active view
+
+Интерпретация профиль не мутирует.
+end note
+
+
+note bottom of Interpretation
+LLM не рассчитывает карту,
+не выбирает tools
+и не изменяет состояние.
+
+Один сценарий =
+один PromptBundle =
+один вызов LLM.
+end note
+
+
+note bottom of NL
+Отложенная NL-ветка переиспользует
+тот же deterministic
+и interpretation flow.
+
+Обычный пользовательский текст
+не изменяет SessionProfile.
+end note
+
+
+legend bottom
+<b>Основной принцип</b>
+
+<color:#2563EB><b>━━━━▶</b></color> основной command / data flow
+
+<color:#00838F><b>━━━━▶</b></color> result / response stream
+
+<color:#2E7D32><b>━━━━▶</b></color> session state и caches
+
+<color:#7E57C2><b>┄┄┄┄▶</b></color> post-MVP extension
+
+<color:#64748B><b>┄┄┄┄▶</b></color> cross-cutting controls
+endlegend
+
+@enduml
