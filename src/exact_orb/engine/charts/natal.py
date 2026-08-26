@@ -8,9 +8,9 @@ from time import perf_counter
 from typing import AbstractSet, Literal, Mapping
 
 from pydantic import BaseModel, Field
-import swisseph as swe
 
-from exact_orb.config import EphemerisStatus, configure_ephemeris, get_selena_method_name
+from exact_orb import swiss_backend
+from exact_orb.config import EphemerisStatus, get_selena_method_name, validate_ephemeris_path
 from exact_orb.engine.aspects import Aspect, AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.configurations import Configuration, ConfigurationConfig, find_configurations
 from exact_orb.engine.ephemeris.calc import (
@@ -25,6 +25,7 @@ from exact_orb.engine.ephemeris.calc import (
     validate_geography,
     zodiac_position,
 )
+from exact_orb.engine.ephemeris.runtime import ephemeris_session
 from exact_orb.engine.ephemeris.types import (
     DEFAULT_BODY_IDS,
     EPSILON,
@@ -119,7 +120,7 @@ def calculate_natal(
     chart_kind: ChartKind,
     house_system: str | bytes = b"P",
     body_ids: Mapping[str, int] | None = None,
-    ephemeris_flags: int = swe.FLG_SWIEPH,
+    ephemeris_flags: int = swiss_backend.swe.FLG_SWIEPH,
     rulership: RulershipScheme | str = RulershipScheme.COMBINED,
     near_interception_threshold: float = 1.0,
     ephemeris_path: str | None = None,
@@ -128,6 +129,50 @@ def calculate_natal(
     aspect_config: AspectConfig | None = None,
     configuration_config: ConfigurationConfig | None = None,
     strength_config: StrengthConfig | None = None,
+) -> NatalChart:
+    """Calculate deterministic natal chart data.
+
+    ``birth_datetime`` must be timezone-aware. It is converted to UTC before
+    creating the UT decimal hour for ``swe.julday``.
+    """
+
+    with ephemeris_session():
+        return _calculate_natal(
+            birth_datetime,
+            latitude,
+            longitude,
+            chart_kind=chart_kind,
+            house_system=house_system,
+            body_ids=body_ids,
+            ephemeris_flags=ephemeris_flags,
+            rulership=rulership,
+            near_interception_threshold=near_interception_threshold,
+            ephemeris_path=ephemeris_path,
+            selena_method=selena_method,
+            include=include,
+            aspect_config=aspect_config,
+            configuration_config=configuration_config,
+            strength_config=strength_config,
+        )
+
+
+def _calculate_natal(
+    birth_datetime: datetime,
+    latitude: float,
+    longitude: float,
+    *,
+    chart_kind: ChartKind,
+    house_system: str | bytes,
+    body_ids: Mapping[str, int] | None,
+    ephemeris_flags: int,
+    rulership: RulershipScheme | str,
+    near_interception_threshold: float,
+    ephemeris_path: str | None,
+    selena_method: str | None,
+    include: AbstractSet[str] | None,
+    aspect_config: AspectConfig | None,
+    configuration_config: ConfigurationConfig | None,
+    strength_config: StrengthConfig | None,
 ) -> NatalChart:
     """Calculate deterministic natal chart data.
 
@@ -151,7 +196,7 @@ def calculate_natal(
     include_blocks = _normalize_include(include)
     _validate_chart_kind_include(chart_kind, include_blocks)
     houses_included = "houses" in include_blocks
-    ephemeris = configure_ephemeris(ephemeris_path)
+    ephemeris = validate_ephemeris_path(ephemeris_path)
     LOGGER.debug(
         "ephemeris configured mode=%s source=%s path=%s missing=%s",
         ephemeris.mode,
@@ -167,7 +212,7 @@ def calculate_natal(
     scheme = RulershipScheme(rulership)
     utc_datetime = to_utc(birth_datetime)
     julian_day_ut = ephemeris_jd_ut(utc_datetime)
-    flags = ephemeris_flags | swe.FLG_SPEED
+    flags = ephemeris_flags | swiss_backend.swe.FLG_SPEED
 
     if houses_included:
         step_started_at = perf_counter()

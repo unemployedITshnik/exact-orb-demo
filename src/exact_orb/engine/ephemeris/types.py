@@ -6,7 +6,8 @@ from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
-import swisseph as swe
+
+from exact_orb import swiss_backend
 
 
 ZODIAC_SIGNS: tuple[str, ...] = (
@@ -70,30 +71,30 @@ COMBINED_RULERS: tuple[tuple[str, ...], ...] = (
 )
 
 DEFAULT_BODY_IDS: dict[str, int] = {
-    "sun": swe.SUN,
-    "moon": swe.MOON,
-    "mercury": swe.MERCURY,
-    "venus": swe.VENUS,
-    "mars": swe.MARS,
-    "jupiter": swe.JUPITER,
-    "saturn": swe.SATURN,
-    "uranus": swe.URANUS,
-    "neptune": swe.NEPTUNE,
-    "pluto": swe.PLUTO,
-    "chiron": swe.CHIRON,
-    "true_node": swe.TRUE_NODE,
-    "mean_apog": swe.MEAN_APOG,
+    "sun": swiss_backend.swe.SUN,
+    "moon": swiss_backend.swe.MOON,
+    "mercury": swiss_backend.swe.MERCURY,
+    "venus": swiss_backend.swe.VENUS,
+    "mars": swiss_backend.swe.MARS,
+    "jupiter": swiss_backend.swe.JUPITER,
+    "saturn": swiss_backend.swe.SATURN,
+    "uranus": swiss_backend.swe.URANUS,
+    "neptune": swiss_backend.swe.NEPTUNE,
+    "pluto": swiss_backend.swe.PLUTO,
+    "chiron": swiss_backend.swe.CHIRON,
+    "true_node": swiss_backend.swe.TRUE_NODE,
+    "mean_apog": swiss_backend.swe.MEAN_APOG,
 }
 
 ANGLE_INDICES: tuple[tuple[str, int], ...] = (
-    ("asc", swe.ASC),
-    ("mc", swe.MC),
-    ("armc", swe.ARMC),
-    ("vertex", swe.VERTEX),
-    ("equatorial_ascendant", swe.EQUASC),
-    ("co_ascendant_koch", swe.COASC1),
-    ("co_ascendant_munkasey", swe.COASC2),
-    ("polar_ascendant", swe.POLASC),
+    ("asc", swiss_backend.swe.ASC),
+    ("mc", swiss_backend.swe.MC),
+    ("armc", swiss_backend.swe.ARMC),
+    ("vertex", swiss_backend.swe.VERTEX),
+    ("equatorial_ascendant", swiss_backend.swe.EQUASC),
+    ("co_ascendant_koch", swiss_backend.swe.COASC1),
+    ("co_ascendant_munkasey", swiss_backend.swe.COASC2),
+    ("polar_ascendant", swiss_backend.swe.POLASC),
 )
 
 SECONDS_PER_SIGN = 30 * 60 * 60

@@ -9,11 +9,11 @@ from math import sqrt
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-import swisseph as swe
 
+from exact_orb import swiss_backend
 from exact_orb.engine.aspects import AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.aspects.types import AspectType
-from exact_orb.config import EphemerisStatus, configure_ephemeris
+from exact_orb.config import EphemerisStatus, validate_ephemeris_path
 from exact_orb.engine.charts.natal import NatalChart
 from exact_orb.engine.ephemeris.calc import (
     calculate_houses,
@@ -25,6 +25,7 @@ from exact_orb.engine.ephemeris.calc import (
     validate_geography,
     zodiac_position,
 )
+from exact_orb.engine.ephemeris.runtime import ephemeris_session, require_ephemeris_session
 from exact_orb.engine.ephemeris.types import (
     AnglePosition,
     CalculationWarning,
@@ -43,24 +44,24 @@ ROOT_TOLERANCE_DEGREES = 1e-7
 ROOT_DEDUP_TOLERANCE = timedelta(hours=1)
 
 TRANSIT_BODY_IDS: dict[str, int] = {
-    "sun": swe.SUN,
-    "moon": swe.MOON,
-    "mercury": swe.MERCURY,
-    "venus": swe.VENUS,
-    "mars": swe.MARS,
-    "jupiter": swe.JUPITER,
-    "saturn": swe.SATURN,
-    "uranus": swe.URANUS,
-    "neptune": swe.NEPTUNE,
-    "pluto": swe.PLUTO,
+    "sun": swiss_backend.swe.SUN,
+    "moon": swiss_backend.swe.MOON,
+    "mercury": swiss_backend.swe.MERCURY,
+    "venus": swiss_backend.swe.VENUS,
+    "mars": swiss_backend.swe.MARS,
+    "jupiter": swiss_backend.swe.JUPITER,
+    "saturn": swiss_backend.swe.SATURN,
+    "uranus": swiss_backend.swe.URANUS,
+    "neptune": swiss_backend.swe.NEPTUNE,
+    "pluto": swiss_backend.swe.PLUTO,
 }
 
 SLOW_STATION_BODY_IDS: dict[str, int] = {
-    "jupiter": swe.JUPITER,
-    "saturn": swe.SATURN,
-    "uranus": swe.URANUS,
-    "neptune": swe.NEPTUNE,
-    "pluto": swe.PLUTO,
+    "jupiter": swiss_backend.swe.JUPITER,
+    "saturn": swiss_backend.swe.SATURN,
+    "uranus": swiss_backend.swe.URANUS,
+    "neptune": swiss_backend.swe.NEPTUNE,
+    "pluto": swiss_backend.swe.PLUTO,
 }
 
 NATAL_ANGLE_ASPECTS = ("asc", "mc", "dsc", "ic", "vertex")
@@ -179,12 +180,42 @@ def calculate_transits(
     location: TransitLocation | Mapping[str, object] | Sequence[object] | None = None,
     *,
     body_ids: Mapping[str, int] | None = None,
-    ephemeris_flags: int = swe.FLG_SWIEPH,
+    ephemeris_flags: int = swiss_backend.swe.FLG_SWIEPH,
     max_orb: float = DEFAULT_ASPECT_ORB,
     exact_window_months: int = DEFAULT_EXACT_WINDOW_MONTHS,
     station_body_ids: Mapping[str, int] | None = None,
     station_aspect_orb: float = DEFAULT_STATION_ASPECT_ORB,
     ephemeris_path: str | None = None,
+) -> TransitChart:
+    """Calculate transits to a natal chart."""
+
+    with ephemeris_session():
+        return _calculate_transits(
+            natal,
+            moment,
+            location,
+            body_ids=body_ids,
+            ephemeris_flags=ephemeris_flags,
+            max_orb=max_orb,
+            exact_window_months=exact_window_months,
+            station_body_ids=station_body_ids,
+            station_aspect_orb=station_aspect_orb,
+            ephemeris_path=ephemeris_path,
+        )
+
+
+def _calculate_transits(
+    natal: NatalChart,
+    moment: datetime | tuple[datetime, datetime] | TransitDateRange,
+    location: TransitLocation | Mapping[str, object] | Sequence[object] | None,
+    *,
+    body_ids: Mapping[str, int] | None,
+    ephemeris_flags: int,
+    max_orb: float,
+    exact_window_months: int,
+    station_body_ids: Mapping[str, int] | None,
+    station_aspect_orb: float,
+    ephemeris_path: str | None,
 ) -> TransitChart:
     """Calculate transits to a natal chart.
 
@@ -194,7 +225,7 @@ def calculate_transits(
     exact aspects/stations are searched inside that explicit range.
     """
 
-    ephemeris = configure_ephemeris(ephemeris_path)
+    ephemeris = validate_ephemeris_path(ephemeris_path)
     moment_utc, window_start, window_end = _normalize_moment(moment, exact_window_months)
     if max_orb < 0.0:
         raise ValueError("max_orb must be non-negative")
@@ -203,7 +234,7 @@ def calculate_transits(
     if natal.cusps is None:
         raise ValueError("natal chart must include houses for transit house placement")
 
-    flags = ephemeris_flags | swe.FLG_SPEED
+    flags = ephemeris_flags | swiss_backend.swe.FLG_SPEED
     transit_body_ids = dict(body_ids or TRANSIT_BODY_IDS)
     positions, warnings = _calculate_transit_positions(moment_utc, transit_body_ids, natal, flags)
     natal_points = _natal_points(natal)
@@ -788,15 +819,17 @@ def _body_longitude_speed(
     body_id: int,
     flags: int,
 ) -> tuple[float, float, int, str]:
+    require_ephemeris_session()
+    jd = julian_day_ut(dt)
     try:
-        xx, retflags, warning = swe.calc_ut(julian_day_ut(dt), body_id, flags)
-    except swe.Error as exc:
+        xx, retflags, warning = swiss_backend.swe.calc_ut(jd, body_id, flags)
+    except swiss_backend.swe.Error as exc:
         raise RuntimeError(
             f"could not calculate transit body swe id {body_id} at {dt.isoformat()}: {exc}"
         ) from exc
     if len(xx) != 6:
         raise RuntimeError(f"swe.calc_ut returned {len(xx)} values, expected 6")
-    if not retflags & swe.FLG_SPEED:
+    if not retflags & swiss_backend.swe.FLG_SPEED:
         raise RuntimeError("swe.calc_ut did not return speed values")
     return normalize_degrees(xx[0]), xx[3], retflags, warning
 
