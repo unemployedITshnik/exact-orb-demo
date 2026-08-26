@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 import pytest
 import swisseph as swe
 
+from exact_orb.config import configure_ephemeris
 from exact_orb.engine.aspects import AspectConfig
 from exact_orb.engine.charts import transit as transit_calc
 from exact_orb.engine.charts.transit import (
@@ -38,6 +39,8 @@ from exact_orb.engine.charts.transit import (
     calculate_transits,
 )
 from exact_orb.engine.charts.natal import NatalChart, calculate_natal
+from exact_orb.engine.ephemeris.runtime import ephemeris_session
+from tests.conftest import REPO_ROOT
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -143,6 +146,9 @@ EXCLUDED_BY_TRANSIT_ORB_CAP = (
 
 @pytest.fixture(scope="module")
 def natal_chart() -> NatalChart:
+    # Module-scoped: it is built before the function-scoped autouse fixture, so
+    # it configures the same repo ephemeris explicitly instead of relying on cwd.
+    configure_ephemeris(REPO_ROOT / "ephe")
     return calculate_natal(
         REFERENCE["datetime_utc"],
         REFERENCE["latitude"],
@@ -313,18 +319,19 @@ def test_exact_dates_and_closest_approach_are_self_consistent(natal_chart: Natal
 
     # Every returned "exact" date should reproduce a near-zero orb when the
     # aspect is independently recomputed at that instant.
-    for exact_date in sun_pars.exact_dates:
-        longitude, _, _, _ = transit_calc._body_longitude_speed(
-            exact_date,
-            swe.SUN,
-            natal_chart.ephemeris_flags,
-        )
-        recomputed_orb = transit_calc._aspect_orb(
-            longitude,
-            natal_pars_longitude,
-            sun_pars.aspect_angle,
-        )
-        assert recomputed_orb < 1e-3
+    with ephemeris_session():
+        for exact_date in sun_pars.exact_dates:
+            longitude, _, _, _ = transit_calc._body_longitude_speed(
+                exact_date,
+                swe.SUN,
+                natal_chart.ephemeris_flags,
+            )
+            recomputed_orb = transit_calc._aspect_orb(
+                longitude,
+                natal_pars_longitude,
+                sun_pars.aspect_angle,
+            )
+            assert recomputed_orb < 1e-3
 
     # The Sun moves about 1 degree/day and the orb is already 0.44 degrees
     # at the window's midpoint, so an exact hit and a very tight closest
