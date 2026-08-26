@@ -1,0 +1,183 @@
+@startuml
+title exact-orb — post-MVP расширение: free-form NL / subscription
+
+left to right direction
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam linetype ortho
+skinparam DefaultFontSize 12
+skinparam ArrowFontSize 10
+skinparam nodesep 30
+skinparam ranksep 40
+
+skinparam package {
+    BackgroundColor #F8FAFC
+    BorderColor #94A3B8
+    FontColor #1E293B
+}
+
+skinparam component {
+    BorderColor #64748B
+    FontColor #0F172A
+}
+
+skinparam database {
+    BorderColor #15803D
+    FontColor #0F172A
+}
+
+actor "Пользователь" as User
+
+package "NL CHANNEL EXTENSION" as Channel {
+    component "<b><color:#172033>Chat Control</color></b>\n<color:#526071>Свободный вопрос или\nописание ситуации</color>" as Chat #DBEAFE
+
+    component "<b><color:#172033>Message API</color></b>\n<color:#526071>MessageCommand +\nidempotency_key</color>" as MessageAPI #EDE9FE
+}
+
+package "APPLICATION EXTENSION" as App {
+    component "<b><color:#172033>Orchestrator</color></b>\n<color:#526071>Использует общий MVP-flow;\nне принимает query-policy решение</color>" as Orch #FFEDD5
+
+    component "<b><color:#172033>InterpretMessageHandler</color></b>\n<color:#526071>Координирует understanding,\nrequest-scoped resolve и policy</color>" as MessageHandler #FFEDD5
+}
+
+package "NL UNDERSTANDING" as Understanding {
+    component "<b><color:#172033>InputGuard</color></b>\n<color:#9F1239>Нормализация, size limits,\nprompt-injection detection\n→ GuardResult</color>" as InputGuard #FCE7F3
+
+    component "<b><color:#172033>IntentService</color></b>\n<color:#526071>Normalized text\n→ UnderstandingResult</color>" as Intent #F99999
+
+    component "<b><color:#172033>BirthDataResolver</color></b>\n<color:#526071>Request-scoped birth slots\n→ resolved data / InputRequired</color>" as BirthResolver #D9F9FF
+
+    component "<b><color:#172033>ContractValidator</color></b>\n<color:#526071>Fields + session profile\n→ ResolvedContract / InputRequired</color>" as Validator #F99999
+}
+
+package "CAPABILITY AND QUERY POLICY" as PolicyLayer {
+    component "<b><color:#172033>CapabilityService</color></b>\n<color:#9F1239>Session / account / tariff\n→ CapabilitySet</color>" as Capability #FCE7F3
+
+    component "<b><color:#172033>PolicyService</color></b>\n<color:#9F1239>free_form capability + GuardVerdict\n+ InterpretationQuery\n→ authorized query / denied</color>" as Policy #FCE7F3
+}
+
+package "REPLAY PROTECTION" as Replay {
+    database "<b><color:#172033>FreeForm Replay Store</color></b>\n<color:#526071>session_id + idempotency_key;\nTTL ≤ Session TTL</color>" as ReplayStore #E8F5E9
+}
+
+package "SHARED MVP EXTENSION POINTS" as Shared {
+    component "<b><color:#172033>RateLimiter</color></b>\n<color:#9F1239>IP / session / endpoint\ntransport precheck</color>" as RateLimiter #FCE7F3
+
+    component "<b><color:#172033>ContextService</color></b>\n<color:#526071>SessionProfile и chat context</color>" as Context #D1FAE5
+
+    component "<b><color:#172033>Planner + Tool Runtime</color></b>\n<color:#526071>Получает только ResolvedContract;\nraw query не видит</color>" as Runtime #FEF3C7
+
+    component "<b><color:#172033>InterpretationService</color></b>\n<color:#526071>Evidence +\nAuthorizedInterpretationQuery</color>" as Interpretation #F2D4CA
+
+    component "<b><color:#172033>InterpretationBudget</color></b>\n<color:#9F1239>operation_class =\nfree_form_interpretation</color>" as Budget #FCE7F3
+
+    component "<b><color:#172033>LLM Gateway + OutputGuard</color></b>\n<color:#526071>Streaming и безопасный ответ</color>" as Gateway #F2D4CA
+
+    component "<b><color:#172033>Observability</color></b>\n<color:#526071>Redacted decision metadata</color>" as Obs #F1F5F9
+}
+
+User -[#2563EB]-> Chat
+Chat -[#2563EB]-> MessageAPI
+
+MessageAPI -[#C62828]-> RateLimiter : IP + session + endpoint
+RateLimiter -[#00838F]-> MessageAPI : RequestPermit / denied
+
+MessageAPI -[#2563EB]-> Orch : MessageCommand
+
+Orch -[#2E7D32]-> Context : load session
+Context -[#00838F]-> Orch : SessionContext
+
+Orch -[#C62828]-> Capability : session / account / tariff
+Capability -[#00838F]-> Orch : CapabilitySet
+
+Orch -[#2563EB]-> MessageHandler : message + SessionContext\n+ CapabilitySet
+
+MessageHandler -[#2E7D32]-> ReplayStore : get(session_id, idempotency_key)
+ReplayStore -[#00838F]-> MessageHandler : replayed safe response / miss
+
+MessageHandler -[#C62828]-> InputGuard : free text
+InputGuard -[#00838F]-> MessageHandler : GuardResult
+
+MessageHandler -[#2563EB]-> Intent : normalized input + context
+Intent -[#00838F]-> MessageHandler : UnderstandingResult {\ncontract_fields, birth_slots,\ninterpretation_query }
+
+MessageHandler -[#2563EB]-> BirthResolver : birth_slots [when present]
+BirthResolver -[#00838F]-> MessageHandler : request-scoped resolved data\n/ InputRequired
+
+MessageHandler -[#2563EB]-> Validator : fields + SessionProfile\n+ request-scoped data
+Validator -[#00838F]-> MessageHandler : ResolvedContract / InputRequired
+
+MessageHandler -[#C62828]-> Policy : CapabilitySet + GuardVerdict\n+ InterpretationQuery
+Policy -[#00838F]-> MessageHandler : AuthorizedInterpretationQuery\n/ PolicyDenied
+
+MessageHandler -[#00838F]-> Orch : PreparedNLRequest {\nResolvedContract,\nAuthorizedInterpretationQuery, replay_key }\n/ InputRequired / PolicyDenied
+
+Orch -[#2563EB]-> Runtime : ResolvedContract only
+Runtime -[#00838F]-> Orch : InterpretationPlan + ToolResults\n/ InputRequired
+
+Orch -[#2563EB]-> Interpretation : plan + ToolResults\n+ opaque authorized query
+Interpretation -[#00838F]-> Orch : PromptBundle
+
+Orch -[#C62828]-> Budget : reserve free_form_interpretation
+Budget -[#00838F]-> Orch : BudgetPermit / denied
+
+Orch -[#2563EB]-> Gateway : PromptBundle + BudgetPermit
+Gateway -[#00838F]-> Orch : safe token stream
+
+Orch -[#2E7D32]-> ReplayStore : put safe response
+Orch -[#00838F]-> MessageAPI : token / done / error
+MessageAPI -[#00838F]-> Chat
+
+RateLimiter -[#64748B,dashed]-> Obs : rate decision
+InputGuard -[#64748B,dashed]-> Obs : GuardVerdict metadata
+Capability -[#64748B,dashed]-> Obs : capability decision
+Policy -[#64748B,dashed]-> Obs : query-policy decision
+Budget -[#64748B,dashed]-> Obs : budget decision
+Gateway -[#64748B,dashed]-> Obs : token / latency metadata
+
+note bottom of MessageHandler
+<color:#526071>Этот handler не изменяет SessionProfile.</color>
+<color:#526071>Даты, время и место внутри вопроса</color>
+<color:#526071>используются request-scoped.</color>
+
+<color:#526071>Явное UpdateBirthData — отдельная</color>
+<b><color:#172033>future command и отдельный handler.</color></b>
+end note
+
+note bottom of ReplayStore
+<color:#526071>Это replay guard, а не shared cache.</color>
+<color:#526071>Он защищает от double click, refresh,</color>
+<color:#526071>retry и двойного списания.</color>
+
+<color:#526071>Fingerprint дополнительно включает</color>
+<color:#526071>query hash, artifact keys</color>
+<color:#526071>и context_version.</color>
+end note
+
+note bottom of Interpretation
+<color:#526071>Planner и Tool Runtime никогда</color>
+<color:#526071>не получают пользовательский вопрос.</color>
+
+<color:#526071>PromptBuilder принимает только</color>
+<b><color:#172033>AuthorizedInterpretationQuery.</color></b>
+end note
+
+legend bottom
+<b>ЛЕГЕНДА</b>
+
+|= Цвет блока |= Ответственность |
+|<#DBEAFE>| Client |
+|<#EDE9FE>| API / transport |
+|<#FFEDD5>| Application coordination |
+|<#D1FAE5>| Session state |
+|<#D9F9FF>| Deterministic resolution |
+|<#F99999>| NL understanding / contracts |
+|<#FCE7F3>| Security / capability / budget |
+|<#FEF3C7>| Shared planning and tools |
+|<#E8F5E9>| Replay storage |
+|<#F2D4CA>| Interpretation / LLM transport |
+endlegend
+
+@enduml

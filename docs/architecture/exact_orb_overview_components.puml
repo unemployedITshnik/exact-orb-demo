@@ -1,0 +1,375 @@
+@startuml
+title exact-orb — блок-схема модулей
+
+top to bottom direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam linetype ortho
+skinparam DefaultFontSize 12
+skinparam ArrowFontSize 10
+skinparam nodesep 30
+skinparam ranksep 40
+
+skinparam package {
+  BackgroundColor #F8FAFC
+  BorderColor #94A3B8
+  FontColor #1E293B
+}
+skinparam component {
+  BorderColor #64748B
+  FontColor #0F172A
+}
+skinparam database {
+  BorderColor #15803D
+  FontColor #0F172A
+}
+
+actor "Пользователь" as User
+
+package "1. CLIENT" as Client {
+  component "<b><color:#172033>Frontend</color></b>\n<color:#526071>Клиентское состояние\nи управление экранами</color>" as Frontend #DBEAFE
+  component "<b><color:#172033>Birth Form</color></b>\n<color:#526071>Явный ввод и изменение\nданных рождения</color>" as BirthForm #DBEAFE
+  component "<b><color:#172033>Location Dropdown</color></b>\n<color:#526071>Подсказки и выбор\ncanonical place_id</color>" as LocationUI #DBEAFE
+  component "<b><color:#172033>Controls and Chat</color></b>\n<color:#526071>topic + focus\nи свободный вопрос</color>" as Controls #DBEAFE
+  component "<b><color:#172033>Chart Renderer</color></b>\n<color:#526071>Chart DTO → SVG</color>" as Renderer #DBEAFE
+
+  Frontend -[#94A3B8]-> BirthForm
+  Frontend -[#94A3B8]-> LocationUI
+  Frontend -[#94A3B8]-> Controls
+  Frontend -[#94A3B8]-> Renderer
+}
+
+package "2. API LAYER" as ApiLayer {
+  component "<b><color:#172033>FastAPI</color></b>\n<color:#526071>Транспорт, DTO validation,\nJSON и SSE</color>" as API #EDE9FE
+  component "<b><color:#172033>Session Middleware</color></b>\n<color:#526071>HttpOnly cookie\n→ anonymous session_id</color>" as SessionMiddleware #EDE9FE
+  component "<b><color:#172033>Build Chart API</color></b>\n<color:#526071>Построение базовой карты</color>" as BuildAPI #EDE9FE
+  component "<b><color:#172033>Selection API</color></b>\n<color:#526071>Интерпретация topic + focus</color>" as SelectionAPI #EDE9FE
+  component "<b><color:#172033>Message API</color></b>\n<color:#526071>Свободный вопрос или\nописание ситуации</color>" as MessageAPI #EDE9FE
+
+  API -[#94A3B8]-> SessionMiddleware
+  API -[#94A3B8]-> BuildAPI
+  API -[#94A3B8]-> SelectionAPI
+  API -[#94A3B8]-> MessageAPI
+}
+
+package "3. APPLICATION COORDINATION" as Application {
+  component "<b><color:#172033>Orchestrator</color></b>\n<color:#526071>Единая координация flow,\nrun_id и StreamEvent</color>" as Orch #FFEDD5
+  component "<b><color:#172033>BuildNatalHandler</color></b>\n<color:#526071>Явное построение или\nизменение базовой карты</color>" as BuildHandler #FFEDD5
+  component "<b><color:#172033>InterpretSelectionHandler</color></b>\n<color:#526071>Типизированный flow\nпо topic и focus</color>" as SelectionHandler #FFEDD5
+  component "<b><color:#172033>InterpretMessageHandler</color></b>\n<color:#526071>Свободный вопрос без\nнеявной мутации профиля</color>" as MessageHandler #FFEDD5
+
+  Orch -[#94A3B8]-> BuildHandler
+  Orch -[#94A3B8]-> SelectionHandler
+  Orch -[#94A3B8]-> MessageHandler
+}
+
+package "4. SESSION STATE" as State {
+  component "<b><color:#172033>ContextService</color></b>\n<color:#526071>load / save анонимной сессии</color>" as Context #D1FAE5
+  component "<b><color:#172033>ProfileService</color></b>\n<color:#526071>Чистые мутации SessionProfile;\nбез собственного persistence</color>" as Profile #D1FAE5
+  database "<b><color:#172033>Session Store</color></b>\n<color:#526071>SessionProfile + последние ходы;\nограниченный TTL</color>" as SessionDB #D1FAE5
+
+  Context -[#2E7D32]-> SessionDB : load / save
+}
+
+package "5. BIRTH DATA RESOLUTION" as Resolution {
+  component "<b><color:#172033>BirthDataResolver</color></b>\n<color:#526071>Birth input → ResolvedBirthData\nили единый InputRequired</color>" as BirthResolver #D9F9FF
+  component "<b><color:#172033>PlaceResolverPort</color></b>\n<color:#526071>place_id / text\n→ canonical candidates</color>" as PlacePort #D9F9FF
+  component "<b><color:#172033>LocalPlaceCatalogAdapter</color></b>\n<color:#526071>Локальный справочник мест</color>" as LocalPlace #D9F9FF
+  component "<b><color:#172033>RemoteGeocoderAdapter</color></b>\n<color:#526071>Сетевой геокодинг,\ntimeout и cache</color>" as RemoteGeo #D9F9FF
+  component "<b><color:#172033>Historical TZ Resolver</color></b>\n<color:#526071>tz_id + local datetime\n→ UTC offset и UTC datetime</color>" as Timezone #D9F9FF
+
+  BirthResolver -[#2563EB]-> PlacePort : resolve place
+  BirthResolver -[#2563EB]-> Timezone : resolve historical time
+  PlacePort -[#7E57C2,dashed]-> LocalPlace : adapter binding
+  PlacePort -[#7E57C2,dashed]-> RemoteGeo : adapter binding
+}
+
+package "6. REQUEST UNDERSTANDING" as Understanding {
+  component "<b><color:#172033>ActionContractBuilder</color></b>\n<color:#526071>topic + focus + active_view\n→ ContractDraft\n+ optional ChartStateIntent</color>" as ActionBuilder #F99999
+  component "<b><color:#172033>InputGuard</color></b>\n<color:#9F1239>Нормализация, size limits,\nprompt-injection detection\n→ GuardResult</color>" as InputGuard #FCE7F3
+  component "<b><color:#172033>IntentService</color></b>\n<color:#526071>Свободный текст\n→ UnderstandingResult</color>" as Intent #F99999
+  component "<b><color:#172033>ContractValidator</color></b>\n<color:#526071>Schema + semantic validation\n→ ResolvedContract\nили единый InputRequired</color>" as ContractValidator #F99999
+}
+
+package "7. POLICY, CAPABILITIES AND ADMISSION" as PolicyLayer {
+  component "<b><color:#172033>CapabilityService</color></b>\n<color:#9F1239>Session / account / tariff\n→ CapabilitySet</color>" as Capability #FCE7F3
+  component "<b><color:#172033>PolicyService</color></b>\n<color:#9F1239>Capability + GuardVerdict\n+ operation / tools / args\n→ permit или deny</color>" as Policy #FCE7F3
+  component "<b><color:#172033>AdmissionControl</color></b>\n<color:#9F1239>Access, rate limit, quota,\nabuse checks и budget reservation</color>" as Admission #FCE7F3
+  database "<b><color:#172033>Quota and Budget Store</color></b>\n<color:#9F1239>Session / account / IP limits\n+ global daily ceiling</color>" as QuotaDB #FCE7F3
+
+  Admission -[#2E7D32]-> QuotaDB : atomic check / reserve / commit
+}
+
+package "8. AGENT RUNTIME" as Runtime {
+  component "<b><color:#172033>Planner</color></b>\n<color:#526071>ResolvedContract\n→ InterpretationPlan\nили единый InputRequired</color>" as Planner #FEF3C7
+  component "<b><color:#172033>ScenarioRegistry</color></b>\n<color:#526071>required fields,\ntools[] и topics[]</color>" as ScenarioRegistry #FEF3C7
+  component "<b><color:#172033>ToolExecutor</color></b>\n<color:#526071>Approved tools, timeout\nи лимит шагов</color>" as ToolExecutor #FEF3C7
+  component "<b><color:#172033>ToolRegistry</color></b>\n<color:#526071>Реестр инструментов</color>" as ToolRegistry #D9E997
+  component "<b><color:#172033>Chart Tool Adapters</color></b>\n<color:#526071>ensure_natal_chart,\ntransit и solar</color>" as ChartTools #D9E997
+
+  Planner -[#7E57C2,dashed]-> ScenarioRegistry : lookup
+  ToolExecutor -[#7E57C2,dashed]-> ToolRegistry : resolve tool
+  ToolRegistry -[#7E57C2,dashed]-> ChartTools : adapter
+  ToolExecutor -[#2563EB]-> ChartTools : ToolRequest
+}
+
+package "9. ARTIFACTS AND CACHES" as Artifacts {
+  component "<b><color:#172033>ChartArtifactResolver</color></b>\n<color:#526071>Cache lookup или\nдетерминированный пересчёт</color>" as ArtifactResolver #E8F5E9
+  component "<b><color:#172033>CalculationKeyFactory</color></b>\n<color:#526071>ResolvedBirthData + ChartSpec\n+ CalculationVersion → key</color>" as KeyFactory #E8F5E9
+  component "<b><color:#172033>CalculationVersionProvider</color></b>\n<color:#526071>Engine + swisseph +\nephemeris-data fingerprint</color>" as CalcVersion #E8F5E9
+  database "<b><color:#172033>Calculation Cache</color></b>\n<color:#526071>Удаляемые воспроизводимые\nChartArtifacts</color>" as CalcCache #E8F5E9
+  component "<b><color:#172033>InterpretationKeyFactory</color></b>\n<color:#526071>Artifact keys + recipe version\n+ focus + query hash</color>" as InterpretationKey #E8F5E9
+  database "<b><color:#172033>Interpretation Cache</color></b>\n<color:#526071>Безопасные готовые ответы;\nfree-form ≤ session TTL</color>" as InterpretationCache #E8F5E9
+
+  ArtifactResolver -[#7E57C2,dashed]-> KeyFactory : build key
+  KeyFactory -[#7E57C2,dashed]-> CalcVersion : version
+  ArtifactResolver -[#2E7D32]-> CalcCache : get / put
+}
+
+package "10. CALCULATION ENGINE" as Calculation {
+  component "<b><color:#172033>EngineService</color></b>\n<color:#526071>Граница детерминированного ядра</color>" as Engine #FFFFF0
+  component "<b><color:#172033>calculate_natal()</color></b>\n<color:#526071>Натал или космограмма</color>" as Natal #FFFFF0
+  component "<b><color:#172033>calculate_transit()</color></b>\n<color:#526071>Транзитные позиции и аспекты</color>" as Transit #FFFFF0
+  component "<b><color:#172033>calculate_solar_return()</color></b>\n<color:#526071>Соляр на год и место</color>" as Solar #FFFFF0
+  component "<b><color:#172033>Ephemeris Core</color></b>\n<color:#526071>Тела, дома, углы, Julian Day</color>" as Ephemeris #FFFFF0
+  component "<b><color:#172033>Domain Calculations</color></b>\n<color:#526071>Аспекты, конфигурации, сила</color>" as Calculations #FFFFF0
+
+  Engine -[#94A3B8]-> Natal
+  Engine -[#94A3B8]-> Transit
+  Engine -[#94A3B8]-> Solar
+  Natal -[#2563EB]-> Ephemeris
+  Transit -[#2563EB]-> Ephemeris
+  Solar -[#2563EB]-> Ephemeris
+  Natal -[#2563EB]-> Calculations
+  Transit -[#2563EB]-> Calculations
+  Solar -[#2563EB]-> Calculations
+}
+
+package "11. INTERPRETATION" as Interpretation {
+  component "<b><color:#172033>InterpretationService</color></b>\n<color:#526071>Детерминированная сборка\nEvidence и одного PromptBundle</color>" as InterpretationService #F2D4CA
+  component "<b><color:#172033>DataSelector</color></b>\n<color:#526071>InterpretationPlan + ToolResults\n→ Evidence</color>" as Selector #F2D4CA
+  component "<b><color:#172033>PromptBuilder</color></b>\n<color:#526071>Evidence + recipe + optional\nAuthorizedInterpretationQuery\n→ один PromptBundle</color>" as PromptBuilder #F2D4CA
+  component "<b><color:#172033>PromptRegistry</color></b>\n<color:#526071>Рецепты по topic, focus, mode</color>" as PromptRegistry #F2D4CA
+  component "<b><color:#172033>LLM Gateway</color></b>\n<color:#526071>Model profile, streaming,\ntimeout и token limit</color>" as Gateway #F2D4CA
+  component "<b><color:#172033>OutputGuard</color></b>\n<color:#9F1239>Проверка ответа\nи безопасный Markdown</color>" as OutputGuard #FCE7F3
+
+  InterpretationService -[#2563EB]-> Selector : plan + ToolResults
+  Selector -[#00838F]-> InterpretationService : Evidence
+  InterpretationService -[#2563EB]-> PromptBuilder : Evidence + authorized query
+  PromptBuilder -[#00838F]-> InterpretationService : PromptBundle
+  PromptBuilder -[#7E57C2,dashed]-> PromptRegistry : recipe
+  InterpretationService -[#7E57C2,dashed]-> InterpretationKey : build cache key
+}
+
+package "12. EXTERNAL AND PLATFORM" as External {
+  component "<b><color:#172033>LLM Provider</color></b>" as LLM #E5E7EB
+  component "<b><color:#172033>Swiss Ephemeris</color></b>" as Swiss #D1D5DB
+  component "<b><color:#172033>Geocoding Provider</color></b>" as GeoProvider #E5E7EB
+  component "<b><color:#172033>Observability</color></b>\n<color:#526071>Redacted logs, metrics, tracing,\ntokens, policy и guard decisions</color>" as Obs #F1F5F9
+}
+
+' Entry and session
+User -[#2563EB]-> Frontend
+Frontend -[#2563EB]-> API
+API -[#2563EB]-> SessionMiddleware : HttpOnly cookie
+SessionMiddleware -[#00838F]-> API : session_id
+API -[#C62828]-> Admission : access / rate precheck
+Admission -[#00838F]-> API : permit / deny
+BuildAPI -[#2563EB]-> Orch : BuildNatalCommand
+SelectionAPI -[#2563EB]-> Orch : SelectionCommand
+MessageAPI -[#2563EB]-> Orch : MessageCommand
+Orch -[#2E7D32]-> Context : load / save ContextDelta
+Context -[#00838F]-> Orch : SessionContext
+Orch -[#C62828]-> Capability : session / account / tariff
+Capability -[#00838F]-> Orch : CapabilitySet
+
+' Explicit build flow
+Orch -[#2563EB]-> BuildHandler : command + SessionContext
+BuildHandler -[#2563EB]-> BirthResolver : explicit form birth data
+BirthResolver -[#00838F]-> BuildHandler : ResolvedBirthData / InputRequired
+BuildHandler -[#2563EB]-> ArtifactResolver : ResolvedBirthData + base ChartSpec
+ArtifactResolver -[#00838F]-> BuildHandler : ChartArtifact
+BuildHandler -[#2563EB]-> Profile : successful explicit update\n+ base ChartSpec
+Profile -[#00838F]-> BuildHandler : SessionProfileDelta
+BuildHandler -[#00838F]-> Orch : BuildResult + ContextDelta\n/ InputRequired
+
+' Selection flow
+Orch -[#2563EB]-> SelectionHandler : command + SessionProfile\n+ CapabilitySet
+SelectionHandler -[#2563EB]-> ActionBuilder : topic + focus + active_view
+ActionBuilder -[#00838F]-> SelectionHandler : ContractDraft\n+ optional ChartStateIntent
+SelectionHandler -[#2563EB]-> ContractValidator : ContractDraft + SessionProfile
+ContractValidator -[#00838F]-> SelectionHandler : ResolvedContract / InputRequired
+SelectionHandler -[#00838F]-> Orch : PreparedInterpretationRequest\n+ optional ChartStateIntent\n/ InputRequired
+
+' Free-form flow
+Orch -[#2563EB]-> MessageHandler : message + SessionProfile\n+ CapabilitySet
+MessageHandler -[#C62828]-> InputGuard : free text
+InputGuard -[#00838F]-> MessageHandler : GuardResult
+MessageHandler -[#C62828]-> Admission : GuardVerdict + abuse signals
+Admission -[#00838F]-> MessageHandler : permit / deny
+MessageHandler -[#2563EB]-> Intent : normalized input + context
+Intent -[#00838F]-> MessageHandler : UnderstandingResult
+MessageHandler -[#2563EB]-> BirthResolver : request birth_slots\n[only when present]
+BirthResolver -[#00838F]-> MessageHandler : ResolvedBirthData / InputRequired
+MessageHandler -[#2563EB]-> ContractValidator : contract_fields + SessionProfile\n+ optional request birth data
+ContractValidator -[#00838F]-> MessageHandler : ResolvedContract / InputRequired
+MessageHandler -[#C62828]-> Policy : free-form operation + CapabilitySet\n+ GuardVerdict + InterpretationQuery
+Policy -[#00838F]-> MessageHandler : AuthorizedInterpretationQuery\n/ PolicyDenied
+MessageHandler -[#00838F]-> Orch : PreparedInterpretationRequest\n/ InputRequired / PolicyDenied
+
+' Planning and tools
+Orch -[#2563EB]-> Planner : ResolvedContract
+Planner -[#00838F]-> Orch : InterpretationPlan / InputRequired
+Orch -[#C62828]-> Policy : plan + CapabilitySet
+Policy -[#00838F]-> Orch : AuthorizedPlan / PolicyDenied
+Orch -[#2563EB]-> ToolExecutor : AuthorizedPlan
+ChartTools -[#2563EB]-> ArtifactResolver : ResolvedBirthData + ChartSpec
+ArtifactResolver -[#2563EB]-> Engine : cache miss
+Engine -[#00838F]-> ArtifactResolver : ChartArtifact
+ArtifactResolver -[#00838F]-> ChartTools : ChartArtifact
+ChartTools -[#00838F]-> ToolExecutor : ToolResult
+ToolExecutor -[#00838F]-> Orch : ToolResults
+Orch -[#2563EB]-> Profile : explicit ChartStateIntent\nafter successful tool flow
+Profile -[#00838F]-> Orch : SessionProfileDelta
+
+' Interpretation, cache and cost control
+Orch -[#2563EB]-> InterpretationService : InterpretationPlan + ToolResults\n+ opaque PreparedInterpretationRequest
+InterpretationService -[#00838F]-> Orch : PreparedPrompt\n+ InterpretationCacheKey
+Orch -[#2E7D32]-> InterpretationCache : get
+InterpretationCache -[#00838F]-> Orch : cached safe response / miss
+Orch -[#C62828]-> Admission : reserve budget on cache miss
+Admission -[#00838F]-> Orch : AdmissionPermit / AdmissionDenied
+Orch -[#2563EB]-> Gateway : PromptBundle + AdmissionPermit
+Gateway -[#EF6C00]-> LLM
+LLM -[#00838F]-> Gateway : token stream
+Gateway -[#C62828]-> OutputGuard : generated chunks
+OutputGuard -[#00838F]-> Orch : safe chunks
+Orch -[#2E7D32]-> InterpretationCache : put safe response
+Orch -[#C62828]-> Admission : commit / cancel actual usage
+
+' Response and external adapters
+Orch -[#00838F]-> API : JSON / SSE\ninput_required / token / done / error
+API -[#00838F]-> Frontend
+Frontend -[#2563EB]-> LocationUI : candidates
+LocationUI -[#00838F]-> Frontend : selected place_id
+Frontend -[#2563EB]-> Renderer : ChartResponse
+RemoteGeo -[#EF6C00]-> GeoProvider
+Ephemeris -[#EF6C00]-> Swiss
+
+' Observability
+API -[#64748B,dashed]-> Obs
+Orch -[#64748B,dashed]-> Obs
+InputGuard -[#64748B,dashed]-> Obs : GuardVerdict metadata
+Capability -[#64748B,dashed]-> Obs : capability decision
+Policy -[#64748B,dashed]-> Obs : policy decision
+Admission -[#64748B,dashed]-> Obs : quota / budget decision
+OutputGuard -[#64748B,dashed]-> Obs : guard decision
+ToolExecutor -[#64748B,dashed]-> Obs
+Gateway -[#64748B,dashed]-> Obs : token / latency metadata
+
+note right of SessionDB
+<b><color:#172033>SessionProfile</color></b>
+<color:#526071>{</color>
+<color:#526071>  birth_data</color>
+<color:#526071>  profile_version</color>
+<color:#526071>  base_chart: { profile_version, spec }</color>
+<color:#526071>  derived_chart: { profile_version, spec } | None</color>
+<color:#526071>  active_view: base | derived</color>
+<color:#526071>}</color>
+
+<color:#526071>ChartSpec — источник восстановления.</color>
+<color:#526071>Hash всегда выводится заново.</color>
+end note
+
+note right of MessageHandler
+<color:#526071>Пользователь может описать ситуацию</color>
+<color:#526071>и попросить интерпретацию относительно</color>
+<color:#526071>аспектов уже сохранённой карты.</color>
+
+<b><color:#172033>MessageHandler не изменяет SessionProfile.</color></b>
+<color:#526071>Дополнительные карты могут считаться</color>
+<color:#526071>request-scoped только для ответа.</color>
+
+<color:#526071>UpdateBirthData — отдельная future feature.</color>
+end note
+
+note right of ContractValidator
+<b><color:#172033>Единый InputRequired</color></b>
+<color:#526071>{ issues: [{</color>
+<color:#526071>  field: contract.path</color>
+<color:#526071>  code: MISSING | AMBIGUOUS |</color>
+<color:#526071>        INVALID | UNSUPPORTED</color>
+<color:#526071>  candidates?, constraints?</color>
+<color:#526071>}] }</color>
+
+<color:#526071>Тот же тип возвращают Resolver,</color>
+<color:#526071>Validator и Planner.</color>
+end note
+
+note right of KeyFactory
+<b><color:#172033>CalculationVersion</color></b>
+<color:#526071>меняется при обновлении engine,</color>
+<color:#526071>swisseph или ephe/*.se1.</color>
+end note
+
+note right of Profile
+<color:#526071>ProfileService не имеет собственной БД.</color>
+<color:#526071>Persistence выполняет ContextService.</color>
+
+<color:#526071>birth_data меняется только явной формой</color>
+<color:#526071>или отдельной командой; chart state —</color>
+<color:#526071>только через typed ChartStateIntent.</color>
+end note
+
+note right of Admission
+<color:#526071>До LLM атомарно резервируются</color>
+<color:#526071>квота и бюджет.</color>
+<b><color:#172033>Global daily ceiling обязателен.</color></b>
+<color:#526071>При cache hit резервации нет.</color>
+end note
+
+note right of InterpretationService
+<color:#526071>Orchestrator передаёт opaque DTO</color>
+<color:#526071>и не принимает query-policy решение.</color>
+<color:#526071>PromptBuilder получает только</color>
+<b><color:#172033>AuthorizedInterpretationQuery.</color></b>
+end note
+
+note right of Obs
+<b><color:#172033>REQUIRED INVARIANT</color></b>
+<color:#526071>В observability идут только redacted</color>
+<color:#526071>structured metadata.</color>
+<color:#526071>Raw input, PromptBundle и LLM response</color>
+<color:#526071>не должны попадать в application logs.</color>
+end note
+
+legend bottom
+<b>ЛЕГЕНДА</b>
+|= Цвет блока |= Ответственность |
+|<#DBEAFE>| Client / rendering |
+|<#EDE9FE>| API / transport |
+|<#FFEDD5>| Application coordination |
+|<#D1FAE5>| Session state |
+|<#D9F9FF>| Place and time resolution |
+|<#F99999>| Understanding / contracts |
+|<#FCE7F3>| Security / policy / admission |
+|<#FEF3C7>| Planning / runtime |
+|<#D9E997>| Tools / adapters |
+|<#E8F5E9>| Artifacts / caches |
+|<#FFFFF0>| Deterministic engine |
+|<#F2D4CA>| Evidence / prompt / LLM transport |
+|<#E5E7EB>| External provider |
+
+|= Связь |= Значение |
+|<color:#2563EB><b>━━━━▶</b></color>| Command / data flow |
+|<color:#00838F><b>━━━━▶</b></color>| Result / typed outcome |
+|<color:#2E7D32><b>━━━━▶</b></color>| State read / write |
+|<color:#7E57C2><b>┄┄┄┄▶</b></color>| Registry / config / port binding |
+|<color:#EF6C00><b>━━━━▶</b></color>| External provider call |
+|<color:#C62828><b>━━━━▶</b></color>| Security / policy boundary |
+|<color:#64748B><b>┄┄┄┄▶</b></color>| Observability |
+|<color:#94A3B8><b>━━━━▶</b></color>| Internal structural dependency |
+endlegend
+
+@enduml
