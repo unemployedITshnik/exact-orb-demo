@@ -1,0 +1,6 @@
+{"place_id": "524901", "name": "Москва", "name_ascii": "Moscow", "country": "RU", "admin1": "Moscow", "latitude": 55.75222, "longitude": 37.61556, "tz_id": "Europe/Moscow", "population": 10381222}
+{"place_id": "2553604", "name": "Касабланка", "name_ascii": "Casablanca", "country": "MA", "admin1": "Grand Casablanca", "latitude": 33.58831, "longitude": -7.61138, "tz_id": "Africa/Casablanca", "population": 3359818}
+{"place_id": "4038270", "name": "Кваджалейн", "name_ascii": "Kwajalein", "country": "MH", "admin1": "Kwajalein", "latitude": 8.71722, "longitude": 167.73444, "tz_id": "Pacific/Kwajalein", "population": 1000}
+{"place_id": "4035413", "name": "Апиа", "name_ascii": "Apia", "country": "WS", "admin1": "Tuamasaga", "latitude": -13.83333, "longitude": -171.76666, "tz_id": "Pacific/Apia", "population": 37708}
+{"place_id": "4030945", "name": "Киритимати", "name_ascii": "Kiritimati", "country": "KI", "admin1": "Line Islands", "latitude": 1.87, "longitude": -157.4, "tz_id": "Pacific/Kiritimati", "population": 5586}
+{"place_id": "9000001", "name": "Битая зона", "name_ascii": "Broken", "country": "XX", "admin1": "", "latitude": 0.0, "longitude": 0.0, "tz_id": "Nowhere/Fake", "population": 1}

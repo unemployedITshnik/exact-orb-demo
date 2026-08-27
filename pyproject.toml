@@ -11,12 +11,14 @@ dependencies = [
     "litellm>=1.97",
     "pydantic>=2",
     "pysweph>=2.10.3.4",
+    "tzdata",
 ]
 
 [project.optional-dependencies]
 dev = [
     "hypothesis>=6",
     "pytest>=8",
+    "pytest-asyncio",
 ]
 
 [project.scripts]
@@ -35,3 +37,4 @@ llm_retries = 2
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+asyncio_mode = "auto"
