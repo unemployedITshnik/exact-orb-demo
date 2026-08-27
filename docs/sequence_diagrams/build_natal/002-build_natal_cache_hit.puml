@@ -1,0 +1,140 @@
+@startuml
+title exact-orb — BuildNatal: попадание в кэш расчётов
+
+' Повторный запрос с теми же данными: спека и ResolvedBirthData совпадают,
+' значит совпадает calculation_key. Движок не вызывается.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ProfileService" as Profile
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+User -> FE : нажимает «построить» второй раз\n(двойной клик, refresh или retry)
+
+note over FE, Orch
+То же намерение, другой прогон:
+команда идентична, run_id новый.
+end note
+FE -> API : POST /charts/natal\nтот же BirthInput
+API -> Orch : BuildNatalCommand\n+ RunContext(новый run_id)
+
+Orch -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : SessionProfile\n(profile_version = 1)
+Context --> Orch : SessionContext(profile)
+
+Orch -> Handler : handle(command, context, run)
+activate Handler
+
+Handler -> Resolver : resolve(birth_input)
+Resolver --> Handler : ResolvedBirthData\n(идентичен предыдущему)
+
+Handler -> Handler : ChartSpec(...)\nидентична предыдущей
+
+Handler -> Artifacts : ensure_chart(spec, resolved)
+activate Artifacts
+
+Artifacts -> Keys : calculation_key(resolved, spec,\nCALCULATION_VERSION)
+Keys --> Artifacts : тот же key
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : ChartArtifact — попадание
+
+Artifacts --> Handler : ChartArtifact
+deactivate Artifacts
+
+note over Artifacts, Engine
+EngineService не вызывается вовсе.
+
+Именно это делает клиентскую
+идемпотентность необязательной: повтор
+не порождает второго расчёта, а CAS
+не пускает второй commit.
+end note
+
+Handler -> Profile : commit_base_chart(profile, ...)
+Profile --> Handler : ContextDelta(expected_version = 1)
+
+Handler --> Orch : BuildNatalSuccess(artifact, delta)
+deactivate Handler
+
+Orch -> Context : save(session_id, delta)
+Context -> Store : compare_and_set(expected_version = 1)
+Store --> Context : profile_version = 2
+Context --> Orch : 2
+
+Orch --> API : Success(chart, profile_version = 2)
+API --> FE : 200 JSON
+FE --> User : та же карта
+
+note over Orch, Store
+Второй commit при неизменившихся данных
+безвреден: карта та же, меняется только
+номер версии.
+
+Возможная оптимизация — сравнить
+calculation_key с уже закоммиченным
+base_chart и вернуть Success без записи.
+Три строки вместо механизма
+идемпотентности.
+end note
+
+@enduml

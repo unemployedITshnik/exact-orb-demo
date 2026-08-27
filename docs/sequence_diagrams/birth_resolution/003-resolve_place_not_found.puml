@@ -1,0 +1,112 @@
+@startuml
+title exact-orb — R-6 (3.3): место отсутствует в каталоге
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+
+Handler -> Resolver : resolve(BirthInput{\nbirth_date = 1990-09-02,\nbirth_time = 14:30,\nplace_id = "999999999" })
+activate Resolver
+
+
+Resolver -> Resolver : проверки даты — пройдены,\nissues пусты
+
+Resolver -> Places : lookup("999999999")
+activate Places
+
+Places -> Places : поиск по каталогу,\nзагруженному на старте
+
+Places --> Resolver : NotFound
+deactivate Places
+
+note right of Places
+place_id приходит от клиента
+и доверенным не является (ADR-0005):
+он мог устареть после обновления
+каталога или быть подделан.
+
+Кандидатов здесь нет: форма выбирающая,
+Build API принимает только place_id,
+а поиск по строке — контракт эндпоинта
+подсказок.
+end note
+
+
+Resolver -> Resolver : issues += {\n field: "birth.place",\n code: INVALID }
+
+Resolver --> Handler : InputRequired {\n issues: [{ field: "birth.place",\n code: INVALID }] }
+deactivate Resolver
+
+
+note over Resolver, TZ
+resolve_historical_tz **не вызывается**:
+без tz_id разрешать время нечем.
+
+Отсюда двухэтапное накопление issues:
+дата и место собираются вместе,
+время — только после успешного места.
+end note
+
+note over Handler
+Handler поднимает исход тем же типом,
+не переупаковывая. Ни кэш, ни движок
+не вызываются, состояние не меняется.
+end note
+
+note over Places
+**R-20, продуктовый тупик.**
+Если у пользователя карта уже построена,
+а geonameid слился при обновлении
+каталога, он получит эту же ошибку
+на поле, которого не трогал —
+редактируя, например, время.
+
+Механически верно, продуктово тупик:
+в форме стоит название города,
+который «не существует».
+
+Смягчение — использовать сохранённый
+в профиле резолв, но это делает
+резолвер зависимым от сессии, чего
+ADR-0005 не допускает. Решение
+принадлежит handler'у.
+end note
+
+@enduml

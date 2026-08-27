@@ -1,0 +1,146 @@
+@startuml
+title exact-orb — BuildNatal: конкурентные запросы, Superseded через CAS
+
+' Замена правилу latest accepted build wins из прежней модели.
+' BuildAttempt и build_revision не используются (ADR-0012).
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+end box
+
+box "ПРОГОН A — данные исправлены первый раз" #FFEDD5
+    control "Orchestrator (run A)" as OrchA
+    control "Handler (run A)" as HandlerA
+end box
+
+box "ПРОГОН B — данные исправлены повторно" #FFE4E6
+    control "Orchestrator (run B)" as OrchB
+    control "Handler (run B)" as HandlerB
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+== Оба прогона стартуют при profile_version = 5 ==
+
+User -> FE : правит дату рождения
+FE -> OrchA : BuildNatalCommand\n+ RunContext(run_id = A)
+OrchA -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : profile_version = 5
+Context --> OrchA : SessionContext
+
+User -> FE : сразу правит ещё раз
+FE -> OrchB : BuildNatalCommand\n+ RunContext(run_id = B)
+OrchB -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : profile_version = 5
+Context --> OrchB : SessionContext
+
+OrchA -> HandlerA : handle(...)
+OrchB -> HandlerB : handle(...)
+
+note over HandlerA, HandlerB
+Оба прогона получили expected_version = 5.
+Ни один из них об этом не знает —
+и знать не обязан.
+end note
+
+
+== B заканчивается первым ==
+
+HandlerB --> OrchB : BuildNatalSuccess(artifact_B,\ndelta{expected_version = 5})
+OrchB -> Context : save(session_id, delta_B)
+Context -> Store : compare_and_set(expected_version = 5)
+Store --> Context : profile_version = 6
+Context --> OrchB : 6
+OrchB --> FE : Success(chart_B, profile_version = 6)
+
+
+== A заканчивается позже ==
+
+HandlerA -> Artifacts : ensure_chart(spec_A, resolved_A)
+Artifacts -> Cache : put(key_A, artifact_A)
+Artifacts --> HandlerA : ChartArtifact
+
+HandlerA --> OrchA : BuildNatalSuccess(artifact_A,\ndelta{expected_version = 5})
+
+note right of Cache
+Артефакт A **корректен** и остаётся
+в кэше: устаревшим он является только
+для этой сессии.
+
+Calculation Cache не является
+пользовательским состоянием (ADR-0017).
+end note
+
+OrchA -> Context : save(session_id, delta_A)
+Context -> Store : compare_and_set(expected_version = 5)
+Store -[#C62828]-> Context : VersionConflict\n(actual = 6)
+Context --> OrchA : Superseded(expected = 5, actual = 6)
+
+OrchA --> FE : Superseded
+FE --> User : карта не меняется;\nактивной остаётся chart_B
+
+note over Store
+Инкремент выполняется **compare-and-set
+внутри store**. Иначе оба прогона
+прочитали бы 5 и оба записали 6
+(ADR-0014).
+
+Версию присваивает store, не handler.
+end note
+
+note over OrchA, Store
+Отброшенный результат возвращается
+клиенту **явно**, а не молчаливым успехом
+с неактивной картой.
+
+Прежняя модель решала это парой проверок
+attempt.revision и expected_profile_version.
+Одного CAS достаточно: A упирается в него
+независимо от того, знает ли система
+о существовании B.
+end note
+
+@enduml

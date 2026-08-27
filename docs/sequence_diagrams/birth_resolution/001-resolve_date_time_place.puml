@@ -1,0 +1,140 @@
+@startuml
+title exact-orb — R-1 (3.1): дата, время и место — успешный резолв
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+
+Handler -> Resolver : resolve(BirthInput{\nbirth_date = 1990-09-02,\nbirth_time = 14:30,\nplace_id = "524901" })
+activate Resolver
+
+
+== 1. Дешёвые проверки без I/O ==
+
+Resolver -> Resolver : birth_date в [min_birth_date, max_birth_date]?\nbirth_date не в будущем?
+
+note right of Resolver
+Проверки идут первыми, но результат
+**не возвращается сразу**: issues
+накапливаются, чтобы неверные дата
+и место подсветились за один заход.
+
+Границы диапазона — параметр
+конструктора: их задаёт состав
+ephe/*.se1, а не код резолвера.
+end note
+
+
+== 2. Место ==
+
+Resolver -> Places : lookup("524901")
+Places --> Resolver : Resolved(\ncanonical_name = "Москва",\nlatitude = 55.75222,\nlongitude = 37.61556,\ntz_id = "Europe/Moscow")
+
+note right of Places
+tz_id приходит из каталога готовым.
+Определять зону по координатам
+не требуется: это географическая
+задача и чужие данные границ,
+а каталог уже несёт ответ (ADR-0005).
+end note
+
+
+== 3. Локальный момент ==
+
+Resolver -> Resolver : time_unknown = false\nlocal_datetime = 1990-09-02 14:30
+
+
+== 4. Историческое смещение ==
+
+Resolver -> TZ : resolve_historical_tz(\n1990-09-02 14:30, "Europe/Moscow")
+activate TZ
+
+TZ -> TZ : round-trip через UTC\n— момент существует
+TZ -> TZ : fold 0 / fold 1\n— смещения совпадают
+
+note right of TZ
+Порядок проверок обязателен:
+несуществующее время сначала.
+
+По PEP 495 при несуществующем времени
+fold=0 и fold=1 тоже дают разные
+смещения, поэтому проверка на удвоение,
+выполненная первой, классифицирует
+несуществующее время как удвоенное.
+end note
+
+TZ --> Resolver : TzOk(\nutc_datetime = 1990-09-02 10:30Z,\nutc_offset_applied = +240,\nwarnings = [])
+deactivate TZ
+
+note over TZ
+Контрольный кейс ADR-0005.
+Наивное «GMT+3» дало бы 11:30 UTC
+и Ascendant, сдвинутый примерно
+на пятнадцать градусов.
+end note
+
+
+== 5. Сборка ==
+
+Resolver --> Handler : ResolvedBirthData {\n utc_datetime = 1990-09-02 10:30Z,\n latitude, longitude,\n tz_id, utc_offset_applied = +240,\n canonical_place = "Москва",\n time_unknown = false,\n warnings = [] }
+deactivate Resolver
+
+note over Handler
+Резолвер в состояние не пишет.
+chart_kind выбирает handler:
+time_unknown = false → natal.
+
+Handler под движок ничего не форматирует:
+раскладку ResolvedBirthData в аргументы
+calculate_natal делает EngineService,
+единственное место, знающее его сигнатуру.
+end note
+
+note over Resolver
+В calculation_key уходит НЕ весь объект,
+а проекция CalculationInput:
+utc_datetime, latitude, longitude.
+
+Иначе переименование места в каталоге
+или новый warning меняли бы ключ,
+не меняя ни одного числа расчёта.
+end note
+
+@enduml

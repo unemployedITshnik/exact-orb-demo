@@ -1,0 +1,117 @@
+@startuml
+title exact-orb — R-2 (3.2): дата и место, время не указано
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+
+Handler -> Resolver : resolve(BirthInput{\nbirth_date = 1990-09-02,\nbirth_time = None,\nplace_id = "524901" })
+activate Resolver
+
+note right of Handler
+Пустое поле времени — штатное
+состояние формы, а не пробел.
+Вопрос пользователю не задаётся
+(ADR-0008).
+end note
+
+
+Resolver -> Resolver : проверки даты — пройдены
+
+Resolver -> Places : lookup("524901")
+Places --> Resolver : Resolved(lat, lon,\ntz_id = "Europe/Moscow")
+
+
+== Конвенция полудня ==
+
+Resolver -> Resolver : time_unknown = true\nlocal_datetime = 1990-09-02 **12:00**
+
+note right of Resolver
+Обе половины одного решения ADR-0008
+принимаются здесь, рядом:
+time_unknown = true и подстановка
+полудня.
+
+Полдень — техническая опорная точка
+для долгот тел. Он не должен создавать
+видимость известного времени ни в одном
+поле результата: birth_time остаётся
+None, time_unknown = true.
+
+Именно поэтому конвенция живёт
+в резолвере, а не в resolve_historical_tz:
+временная функция не знает предметных
+правил и переиспользуется для момента
+транзита, где неизвестного времени
+не бывает.
+end note
+
+
+Resolver -> TZ : resolve_historical_tz(\n1990-09-02 12:00, "Europe/Moscow")
+TZ --> Resolver : TzOk(utc_datetime = 08:00Z,\nutc_offset_applied = +240)
+
+
+== Сборка ==
+
+Resolver --> Handler : ResolvedBirthData {\n utc_datetime = 1990-09-02 08:00Z,\n time_unknown = **true**,\n warnings = [] }
+deactivate Resolver
+
+note over Handler
+chart_kind = "cosmogram"
+include = {positions, aspects,
+           configurations}
+
+houses, rulers и strength исключены:
+дом меняется раз в четыре минуты,
+и без точного времени они произвольны.
+end note
+
+note over Resolver, TZ
+Аномалия зоны на подставленном полдне
+обрабатывается иначе — см. R-16 и R-17.
+
+При time_unknown = true несуществующий
+или удвоенный полдень не поднимается
+в InputRequired: нельзя просить человека
+исправить значение, которое подставила
+система.
+end note
+
+@enduml

@@ -1,0 +1,155 @@
+@startuml
+title exact-orb — BuildNatal: StateCommitFailed и SessionExpired
+
+' Расчёт прошёл, состояние — нет. Успешный расчёт не равен
+' успешной пользовательской операции (ADR-0006).
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ProfileService" as Profile
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+User -> FE : отправляет форму
+FE -> API : POST /charts/natal
+API -> Orch : BuildNatalCommand
+
+Orch -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : SessionProfile\n(profile_version = 3)
+Context --> Orch : SessionContext
+
+Orch -> Handler : handle(command, context)
+activate Handler
+
+Handler -> Artifacts : ensure_chart(spec, resolved)
+Artifacts -> Engine : calculate(spec, resolved)
+Engine --> Artifacts : ChartArtifact
+Artifacts -> Cache : put(key, artifact)
+Artifacts --> Handler : ChartArtifact
+
+Handler -> Profile : commit_base_chart(...)
+Profile --> Handler : ContextDelta(expected_version = 3)
+
+Handler --> Orch : BuildNatalSuccess(artifact, delta)
+deactivate Handler
+
+note over Handler, Cache
+До этой точки всё успешно:
+артефакт получен и положен в кэш.
+end note
+
+
+alt Session Store недоступен при записи
+
+    Orch -> Context : save(session_id, delta)
+    Context -> Store : compare_and_set(expected_version = 3)
+    Store -[#C62828]-> Context : timeout / unavailable
+    Context --> Orch : StateCommitFailed(error_code)
+
+    Orch --> API : 503 STATE_COMMIT_FAILED
+    API --> FE : retryable system error
+    FE --> User : «карта рассчитана,\nно не сохранена, повторите»
+
+    note over Orch, Store
+    **Операция неуспешна.** Расчёт прошёл,
+    состояние не изменилось — значит
+    пользовательская операция не состоялась
+    (§1.5 негативных сценариев).
+
+    Success не возвращается до завершения
+    требуемого state transition.
+    end note
+
+else TTL сессии истёк во время расчёта
+
+    Orch -> Context : save(session_id, delta)
+    Context -> Store : compare_and_set(expected_version = 3)
+    Store --> Context : сессии нет
+    Context --> Orch : SessionExpired
+
+    Orch --> API : SessionExpired
+    API --> FE : session_expired
+    FE -> FE : возврат к bootstrap
+    FE --> User : форма ввода данных рождения
+
+    note over FE, Context
+    Восстановление карты из данных клиента
+    **запрещено**: frontend не источник
+    истины (ADR-0005, ADR-0009).
+
+    Понадобится продуктово — вводится
+    отдельным решением через подписанный
+    серверный токен.
+    end note
+
+end
+
+note over Cache
+В обеих ветках артефакт остаётся в кэше.
+Он корректен и воспроизводим; при повторе
+запрос попадёт в кэш и расчёт
+не повторится.
+end note
+
+note over Orch
+StateCommitFailed и Superseded — **разные
+исходы**. Первый означает «повтори»,
+второй — «твой результат больше
+не актуален». Смешивать их нельзя:
+проверяется тестом ContextService.
+end note
+
+@enduml

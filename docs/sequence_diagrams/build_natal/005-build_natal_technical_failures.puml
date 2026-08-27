@@ -1,0 +1,156 @@
+@startuml
+title exact-orb — BuildNatal: ResolutionUnavailable и CalculationFailed
+
+' Технические отказы. Ключевой инвариант B-1: техническая ошибка
+' никогда не преобразуется в InputRequired.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+User -> FE : отправляет форму
+FE -> API : POST /charts/natal
+API -> Orch : BuildNatalCommand
+
+Orch -> Context : load(session_id)
+Context --> Orch : SessionContext
+
+Orch -> Handler : handle(command, context)
+activate Handler
+
+
+alt Зависимость резолва недоступна
+
+    Handler -> Resolver : resolve(birth_input)
+    Resolver -> Places : lookup(place_id)
+    Places -[#C62828]-> Resolver : timeout / unavailable / exception
+
+    Resolver --> Handler : ResolutionUnavailable\n(error_code, retryable = true)
+    Handler --> Orch : ResolutionUnavailable
+
+    Orch --> API : 503 RESOLUTION_UNAVAILABLE
+    API --> FE : retryable system error
+    FE --> User : «не удалось определить место\nили время, повторите позже»
+
+    note over Artifacts, Swiss
+    Кэш и движок не вызываются.
+    end note
+
+else Отказ расчётного ядра
+
+    Handler -> Resolver : resolve(birth_input)
+    Resolver --> Handler : ResolvedBirthData
+
+    Handler -> Artifacts : ensure_chart(spec, resolved)
+    Artifacts -> Cache : get(key)
+    Cache --> Artifacts : None — промах
+
+    Artifacts -> Engine : calculate(spec, resolved)
+    Engine -> Swiss : calculate_natal(...)
+    Swiss -[#C62828]-> Engine : ValueError
+
+    note right of Swiss
+    Реальный случай из кода: Placidus
+    вырождается на высоких широтах,
+    calculate_houses поднимает ValueError.
+
+    Это отказ расчёта, а не ошибка ввода:
+    пользователь не может «исправить»
+    широту своего рождения.
+    end note
+
+    Engine --> Artifacts : CalculationFailed(error_code)
+    Artifacts --> Handler : CalculationFailed
+
+    note over Artifacts, Cache
+    В кэш ничего не кладётся:
+    put выполняется только после
+    успешного расчёта.
+    end note
+
+    Handler --> Orch : CalculationFailed
+    Orch --> API : 500 CALCULATION_FAILED
+    API --> FE : system error
+    FE --> User : «не удалось рассчитать карту»
+
+end
+
+deactivate Handler
+
+note over Handler, Orch
+**B-1.** Ни один из этих исходов
+не превращается в InputRequired.
+
+Подсказывать пользователю исправить ввод,
+когда сломана зависимость, — значит
+отправить его переделывать корректные
+данные (ADR-0007, §1.6 негативных
+сценариев).
+end note
+
+note over Context, Store
+В обеих ветках commit не выполняется.
+Ранее успешный SessionProfile
+остаётся неизменным.
+end note
+
+@enduml
