@@ -1,0 +1,261 @@
+@startuml
+title exact-orb — BuildNatal: первое построение, промах кэша
+
+' Текущая модель реализации (build_natal_components.md).
+' BuildAttempt отсутствует: актуальность держит CAS по profile_version.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ProfileService" as Profile
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+== Вход ==
+
+User -> FE : дата, время, город\n(город выбран из подсказок)
+FE -> API : POST /charts/natal\nBirthInput(birth_date, birth_time, place_id)
+API -> Orch : BuildNatalCommand(session_id, birth_input)\n+ RunContext(run_id)
+
+note over API, Orch
+run_id создаётся транспортом до оркестратора:
+correlation scope по ADR-0006 начинается
+с API request, а резолв cookie и rate limit
+происходят раньше.
+
+В команду он не входит — команда описывает
+намерение, а run_id телеметрия.
+
+Build API принимает только place_id.
+Свободный текст места не принимается
+(ADR-0005), поэтому AMBIGUOUS
+на этом пути не возникает.
+end note
+
+
+== Загрузка контекста ==
+
+Orch -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : None
+Context --> Orch : SessionContext(profile = None)
+
+Orch -> Orch : handler = handlers[BuildNatalCommand]
+
+note right of Orch
+Маршрутизация по типу команды.
+Словарь, не LLM (ADR-0006).
+end note
+
+Orch -> Handler : handle(command, context, run)
+activate Handler
+
+
+== Резолв данных рождения ==
+
+Handler -> Resolver : resolve(birth_input)
+activate Resolver
+
+Resolver -> Places : lookup(place_id)
+Places --> Resolver : Resolved(canonical_name,\nlatitude, longitude, tz_id)
+
+Resolver -> Resolver : local_datetime = birth_date + birth_time\n(при time_unknown — местный полдень)
+
+Resolver -> TZ : resolve_historical_tz(\nlocal_datetime, tz_id)
+TZ --> Resolver : TzOk(utc_datetime,\nutc_offset_applied, warnings)
+
+Resolver --> Handler : ResolvedBirthData\n(time_unknown = false)
+deactivate Resolver
+
+note over Places, TZ
+tz_id из каталога нужен дважды:
+как вход исторического смещения
+и как хранимое поле ResolvedBirthData
+(ADR-0005).
+
+Координаты функции времени не нужны:
+«координаты → tz_id» — географическая
+задача и данные границ зон,
+«время + tz_id → UTC» — временная
+и база IANA. Каталог владеет «где»,
+функция — «когда».
+end note
+
+note over Resolver, TZ
+Резолвер в состояние не пишет.
+Историческое смещение обязательно:
+02.09.1990 Москва — UTC+4, не UTC+3.
+
+Гарантия tzdb действует только
+с 1970-01-01. Для более ранних дат
+TzOk несёт warning
+pre_1970_offset_unverified,
+который по И-7 доходит до промпта.
+end note
+
+
+== Построение спецификации ==
+
+Handler -> Handler : chart_kind = "natal"\ninclude = DEFAULT_INCLUDE\nChartSpec(...)
+
+note right of Handler
+Единственное предметное решение
+на этом пути (ADR-0008):
+
+  дата + место + время → natal
+  дата + место         → cosmogram
+end note
+
+
+== Получение артефакта ==
+
+Handler -> Artifacts : ensure_chart(spec, resolved)
+activate Artifacts
+
+Artifacts -> Keys : calculation_key(resolved, spec,\nCALCULATION_VERSION)
+Keys --> Artifacts : key
+
+note right of Keys
+CALCULATION_VERSION =
+  ENGINE_VERSION
++ swisseph.version
++ sha256(ephe/*.se1)
+
+Чистая функция без состояния
+(ADR-0017).
+end note
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Engine : calculate(spec, resolved)
+activate Engine
+
+Engine -> Engine : run_in_executor(executor, ...)
+
+note right of Engine
+ephemeris_session() — process-wide
+RLock. Захват из корутины заблокировал
+бы event loop: async def сам по себе
+CPU-bound работу не распараллеливает
+(ADR-0012).
+end note
+
+Engine -> Swiss : with ephemeris_session():\ncalculate_natal(...)
+Swiss --> Engine : NatalChart\n(chart_kind = "natal", warnings)
+
+Engine --> Artifacts : ChartArtifact
+deactivate Engine
+
+Artifacts -> Cache : put(key, artifact)
+Artifacts --> Handler : ChartArtifact
+deactivate Artifacts
+
+note over Artifacts, Cache
+Кэш, а не репозиторий: после eviction
+артефакт воспроизводится из ChartSpec
+и ResolvedBirthData (И-12).
+end note
+
+
+== Формирование дельты ==
+
+Handler -> Profile : commit_base_chart(None, birth_input,\nbirth_resolved, spec)
+Profile --> Handler : ContextDelta(profile,\nexpected_version = 0)
+
+note over Handler, Profile
+ProfileService выполняет чистую мутацию
+и не имеет собственного хранилища.
+Версию присвоит store (ADR-0014).
+end note
+
+Handler --> Orch : BuildNatalSuccess(artifact, delta)
+deactivate Handler
+
+
+== Commit состояния ==
+
+Orch -> Context : save(session_id, delta)
+Context -> Store : compare_and_set(session_id, profile,\nexpected_version = 0)
+Store --> Context : profile_version = 1
+Context --> Orch : 1
+
+
+== Ответ ==
+
+Orch --> API : Success(chart,\nprofile_version = 1, active_view = base)
+API --> FE : 200 JSON
+FE -> FE : render natal SVG
+FE --> User : натальная карта
+
+note over Orch, Swiss
+Agent Runtime не запускается.
+Planner, ScenarioRegistry, ToolExecutor
+и LLM на этом пути отсутствуют
+(ADR-0012, ADR-0020).
+
+Success возвращается только после
+подтверждённого commit: успешный расчёт
+не равен успешной операции (ADR-0006).
+end note
+
+@enduml

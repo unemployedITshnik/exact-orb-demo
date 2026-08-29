@@ -1,0 +1,148 @@
+@startuml
+title exact-orb — BuildNatal: InputRequired (недоверенный place_id и время перехода)
+
+' Пользовательская ошибка ввода. Кэш и движок не вызываются,
+' SessionProfile не изменяется.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+box "АРТЕФАКТЫ / РАСЧЁТ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "EngineService" as Engine
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+User -> FE : отправляет форму
+FE -> API : POST /charts/natal
+API -> Orch : BuildNatalCommand
+
+Orch -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : SessionProfile | None
+Context --> Orch : SessionContext
+
+Orch -> Handler : handle(command, context)
+activate Handler
+
+Handler -> Resolver : resolve(birth_input)
+activate Resolver
+
+
+alt place_id неизвестен каталогу
+
+    Resolver -> Places : lookup(place_id)
+    Places --> Resolver : NotFound
+
+    Resolver --> Handler : InputRequired {\n issues: [{ field: "birth.place",\n code: INVALID }] }
+
+    note right of Places
+    place_id приходит от клиента
+    и доверенным не является (ADR-0005):
+    он мог устареть после обновления
+    каталога или быть подделан.
+
+    Кандидатов здесь нет: форма выбирающая,
+    AMBIGUOUS порождает эндпоинт подсказок.
+    end note
+
+else локальное время не существует или удвоено
+
+    Resolver -> Places : lookup(place_id)
+    Places --> Resolver : Resolved(lat, lon, tz_id)
+
+    Resolver -> TZ : resolve_historical_tz(\nbirth_date, birth_time, tz_id)
+    TZ --> Resolver : TzNonexistent | TzAmbiguous
+
+    Resolver --> Handler : InputRequired {\n issues: [{ field: "birth.time",\n code: INVALID }] }
+
+    note right of TZ
+    Несуществующее и удвоенное локальное
+    время не исправляется молча (ADR-0005)
+    и не поднимает исключение: это три
+    явных исхода функции.
+    end note
+
+end
+
+deactivate Resolver
+
+Handler --> Orch : InputRequired
+deactivate Handler
+
+note over Handler
+Handler поднимает исход **тем же типом**,
+не переупаковывая и не обобщая.
+end note
+
+Orch --> API : InputRequired
+API --> FE : 422 typed issues
+FE -> FE : подсветить поле по issues[].field
+FE --> User : «уточните место» / «уточните время»
+
+note over Artifacts, Engine
+Не вызываются: ни calculation_key,
+ни CalculationCache, ни EngineService.
+end note
+
+note over Context, Store
+Записи в Session Store нет.
+Ранее успешный SessionProfile
+остаётся неизменным.
+
+Многоходового состояния нет: клиент
+повторяет запрос с дополненными данными
+(ADR-0007).
+end note
+
+@enduml

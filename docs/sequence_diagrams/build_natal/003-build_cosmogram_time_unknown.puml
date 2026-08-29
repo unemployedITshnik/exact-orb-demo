@@ -1,0 +1,174 @@
+@startuml
+title exact-orb — BuildNatal: космограмма при неизвестном времени
+
+' Пустое поле времени — штатное состояние формы, а не пробел.
+' Вопрос пользователю не задаётся (ADR-0008).
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "ТРАНСПОРТ" #DBEAFE
+    boundary "Frontend" as FE
+    boundary "Build API" as API
+end box
+
+box "APPLICATION" #FFEDD5
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Handler
+end box
+
+box "РЕЗОЛВ" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+box "СЕССИЯ" #D1FAE5
+    control "ProfileService" as Profile
+    control "ContextService" as Context
+    database "SessionStore" as Store
+end box
+
+
+User -> FE : дата и город;\nполе времени оставлено пустым
+FE -> API : POST /charts/natal\nBirthInput(birth_time = None)
+API -> Orch : BuildNatalCommand
+
+Orch -> Context : load(session_id)
+Context -> Store : get(session_id)
+Store --> Context : SessionProfile | None
+Context --> Orch : SessionContext
+
+Orch -> Handler : handle(command, context)
+activate Handler
+
+Handler -> Resolver : resolve(birth_input)
+activate Resolver
+
+Resolver -> Places : lookup(place_id)
+Places --> Resolver : Resolved(lat, lon, tz_id)
+
+Resolver -> TZ : resolve_historical_tz(\nbirth_date, None, tz_id)
+TZ --> Resolver : TzOk(utc_datetime\nот местного полудня)
+
+Resolver --> Handler : ResolvedBirthData\n(time_unknown = true)
+deactivate Resolver
+
+note over Resolver, TZ
+Полдень — техническая опорная точка
+для долгот тел.
+
+Он не должен создавать видимость
+известного времени ни в одном поле
+результата (ADR-0008): birth_time
+остаётся None, time_unknown = true.
+end note
+
+
+Handler -> Handler : chart_kind = "cosmogram"\ninclude = {positions,\naspects, configurations}
+
+note right of Handler
+houses, rulers и strength исключены.
+strength в коде требует houses, поэтому
+движок отвергнет несогласованный
+include (_validate_chart_kind_include).
+
+Вопрос о времени пользователю
+не задаётся: пустое поле — явное
+time_unknown, а не пробел,
+требующий уточнения.
+end note
+
+Handler -> Artifacts : ensure_chart(spec, resolved)
+activate Artifacts
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Engine : calculate(spec, resolved)
+Engine -> Swiss : calculate_natal(\nchart_kind = "cosmogram", ...)
+
+Swiss -> Swiss : проверка суточной\nнеоднозначности
+
+note right of Swiss
+Требование ADR-0008, **в коде пока
+отсутствует**: предупреждение при смене
+знака Луны либо знака или директности
+быстрого объекта в пределах суток.
+
+Критерий проверяем тестом; обобщённая
+формулировка «существенно неоднозначно»
+запрещена.
+end note
+
+Swiss --> Engine : NatalChart\n(chart_kind = "cosmogram",\ncusps = None, angles = None,\nwarnings = [moon_sign_change])
+Engine --> Artifacts : ChartArtifact
+
+Artifacts -> Cache : put(key, artifact)
+Artifacts --> Handler : ChartArtifact\n(chart_kind поднят наверх)
+deactivate Artifacts
+
+Handler -> Profile : commit_base_chart(...)
+Profile --> Handler : ContextDelta
+Handler --> Orch : BuildNatalSuccess
+deactivate Handler
+
+Orch -> Context : save(session_id, delta)
+Context -> Store : compare_and_set(...)
+Store --> Context : profile_version + 1
+Context --> Orch : ok
+
+Orch --> API : Success(chart,\nchart_kind = cosmogram, warnings)
+API --> FE : 200 JSON
+FE -> FE : render cosmogram\n(визуально отличен от натала)
+FE --> User : космограмма
+
+note over FE, Orch
+Вид карты определяется полем chart_kind,
+а не отсутствием домов (И-8).
+
+warnings обязаны дойти до промпта (И-7),
+поэтому подняты на уровень ChartArtifact,
+а не спрятаны внутри NatalChart.
+end note
+
+@enduml
