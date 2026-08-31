@@ -1,0 +1,1186 @@
+@startuml
+title exact-orb — class diagram from src/exact_orb
+
+top to bottom direction
+
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
+skinparam DefaultFontSize 12
+skinparam ArrowFontSize 10
+skinparam nodesep 35
+skinparam ranksep 45
+
+skinparam package {
+  BackgroundColor #F8FAFC
+  BorderColor #94A3B8
+  FontColor #1E293B
+}
+
+skinparam class {
+  BackgroundColor #FFFFFF
+  BorderColor #64748B
+  FontColor #0F172A
+}
+
+skinparam interface {
+  BackgroundColor #F0FDFA
+  BorderColor #0F766E
+  FontColor #0F172A
+}
+
+skinparam enum {
+  BackgroundColor #FEF3C7
+  BorderColor #D97706
+  FontColor #0F172A
+}
+
+' =========================
+' DOMAIN AND RUNTIME
+' =========================
+
+package "exact_orb.domain" as domain {
+  class ChartKind <<Literal>>
+  class IncludeBlock <<Literal>>
+
+  enum RulershipScheme {
+    COMBINED = "combined"
+    MODERN = "modern"
+    TRADITIONAL = "traditional"
+  }
+}
+
+package "exact_orb.config / runtime" as runtime {
+  class EphemerisStatus <<Pydantic>> {
+    +path: str
+    +source: Literal
+    +mode: Literal
+    +required_files: tuple[str]
+    +found_files: tuple[str]
+    +missing_files: tuple[str]
+    +using_files: bool
+  }
+
+  class _EphemerisRuntimeState <<dataclass>> {
+    +status: EphemerisStatus
+    +normalized_path: str
+    +selena_method: SelenaMethodName
+  }
+
+  class RunContext <<Pydantic>> {
+    +run_id: UUID
+    +started_at: datetime
+    +new(): RunContext
+  }
+
+  class SelenaMethodName <<Literal>>
+
+  class EphemerisRuntimeError <<Exception>>
+  class EphemerisConfigurationError <<Exception>>
+  class EphemerisNotInitializedError <<Exception>>
+  class EphemerisPathMismatchError <<Exception>>
+  class EphemerisSessionRequiredError <<Exception>>
+}
+
+EphemerisConfigurationError --|> EphemerisRuntimeError
+EphemerisNotInitializedError --|> EphemerisConfigurationError
+EphemerisPathMismatchError --|> EphemerisConfigurationError
+EphemerisSessionRequiredError --|> EphemerisRuntimeError
+_EphemerisRuntimeState *-- EphemerisStatus
+_EphemerisRuntimeState --> SelenaMethodName
+
+' =========================
+' OUTCOMES
+' =========================
+
+package "exact_orb.outcomes" as outcomes {
+  class IssueCode <<Literal>>
+
+  class Issue <<Pydantic>> {
+    +field: str
+    +code: IssueCode
+    +candidates: tuple[Any]
+    +constraints: dict[str, Any]
+  }
+
+  class InputRequired <<Pydantic>> {
+    +issues: tuple[Issue]
+  }
+
+  class ResolutionUnavailable <<Pydantic>> {
+    +error_code: str
+    +retryable: bool
+  }
+
+  class CalculationFailed <<Pydantic>> {
+    +error_code: str
+  }
+}
+
+InputRequired *-- Issue
+Issue --> IssueCode
+
+' =========================
+' BIRTH DATA
+' =========================
+
+package "exact_orb.birth" as birth {
+  class BirthInput <<Pydantic>> {
+    +birth_date: date
+    +birth_time: time
+    +place_id: str
+  }
+
+  class ResolutionWarning <<Pydantic>> {
+    +source: Literal["place", "time"]
+    +code: str
+    +message: str
+  }
+
+  class ResolvedBirthData <<Pydantic>> {
+    +utc_datetime: datetime
+    +latitude: float
+    +longitude: float
+    +tz_id: str
+    +utc_offset_seconds: int
+    +canonical_place: str
+    +time_unknown: bool
+    +warnings: tuple[ResolutionWarning]
+  }
+
+  class ResolvedPlace <<Pydantic>> {
+    +place_id: str
+    +canonical_name: str
+    +latitude: float
+    +longitude: float
+    +tz_id: str
+  }
+
+  class PlaceNotFound <<Pydantic>> {
+    +place_id: str
+  }
+
+  class PlaceResolution <<TypeAlias>>
+
+  interface PlaceCatalog <<Protocol>> {
+    +lookup(place_id: str): PlaceResolution
+  }
+
+  class LocalPlaceCatalog {
+    -_places: dict[str, ResolvedPlace]
+    +from_file(path): LocalPlaceCatalog
+    +lookup(place_id: str): PlaceResolution
+  }
+
+  class PlaceCatalogUnavailableError <<Exception>>
+
+  class TzOk <<Pydantic>> {
+    +utc_datetime: datetime
+    +utc_offset_seconds: int
+    +warnings: tuple[ResolutionWarning]
+  }
+
+  class TzNonexistent <<Pydantic>> {
+    +local_datetime: datetime
+    +tz_id: str
+    +normalized: datetime
+  }
+
+  class TzAmbiguous <<Pydantic>> {
+    +local_datetime: datetime
+    +tz_id: str
+    +offsets: tuple[int, int]
+  }
+
+  class TzResolution <<TypeAlias>>
+  class UnknownTimezoneError <<Exception>>
+
+  class BirthDataResolver {
+    -_places: PlaceCatalog
+    -_min_birth_date: date
+    -_max_birth_date: date
+    +resolve(birth_input: BirthInput): ResolvedBirthData or InputRequired or ResolutionUnavailable
+  }
+}
+
+ResolvedBirthData *-- ResolutionWarning
+PlaceResolution ..> ResolvedPlace : union
+PlaceResolution ..> PlaceNotFound : union
+LocalPlaceCatalog ..|> PlaceCatalog
+LocalPlaceCatalog *-- ResolvedPlace
+TzOk *-- ResolutionWarning
+TzResolution ..> TzOk : union
+TzResolution ..> TzNonexistent : union
+TzResolution ..> TzAmbiguous : union
+BirthDataResolver --> PlaceCatalog
+BirthDataResolver --> BirthInput
+BirthDataResolver --> ResolvedBirthData
+BirthDataResolver --> InputRequired
+BirthDataResolver --> ResolutionUnavailable
+BirthDataResolver --> RunContext
+BirthDataResolver --> TzResolution
+
+' =========================
+' CALCULATION BOUNDARY
+' =========================
+
+package "exact_orb.calculation" as calculation {
+  class NatalChartSpec <<Pydantic>> {
+    +technique: Literal["natal"]
+    +chart_kind: ChartKind
+    +include: tuple[IncludeBlock]
+    +house_system: str
+    +rulership: RulershipScheme
+    +near_interception_threshold: float
+  }
+
+  class ChartSpec <<TypeAlias>>
+
+  class CalculationInput <<Pydantic>> {
+    +utc_datetime: datetime
+    +latitude: float
+    +longitude: float
+  }
+
+  interface CalculationCache <<Protocol>> {
+    +get(key: str): bytes
+    +put(key: str, payload: bytes): None
+  }
+
+  class _CacheEntry <<dataclass>> {
+    +payload: bytes
+    +expires_at: float
+  }
+
+  class InMemoryCalculationCache {
+    +max_entries: int
+    +ttl_seconds: float
+    -_entries: OrderedDict[str, _CacheEntry]
+    +get(key: str): bytes
+    +put(key: str, payload: bytes): None
+    +clear(): None
+  }
+
+  class ArtifactEphemerisStatus <<Pydantic>> {
+    +mode: Literal["files", "fallback"]
+    +required_files: tuple[str]
+    +found_files: tuple[str]
+    +missing_files: tuple[str]
+    +using_files: bool
+  }
+
+  class ArtifactNatalChart <<Pydantic>> {
+    +ephemeris: ArtifactEphemerisStatus
+  }
+
+  class ChartArtifact <<Pydantic>> {
+    +calculation_key: str
+    +spec: ChartSpec
+    +calculation_version: str
+    +chart_kind: ChartKind
+    +chart: ArtifactNatalChart
+    +warnings: tuple[CalculationWarning]
+  }
+
+  class CalculationResult <<Pydantic>> {
+    +chart_kind: ChartKind
+    +chart: NatalChart
+    +warnings: tuple[CalculationWarning]
+  }
+
+  interface CalculationEnginePort <<Protocol>> {
+    +calculate(spec: ChartSpec, resolved: ResolvedBirthData, run: RunContext): CalculationResult
+  }
+
+  interface TechniqueAdapter <<Protocol>> {
+    +technique: str
+    +calculate(spec: ChartSpec, resolved: ResolvedBirthData): CalculationResult
+  }
+
+  class NatalTechniqueAdapter {
+    +technique: str
+    -_calculator: Callable
+    +calculate(spec: ChartSpec, resolved: ResolvedBirthData): CalculationResult
+  }
+
+  class EngineService {
+    -_techniques: Mapping[str, TechniqueAdapter]
+    -_executor: ThreadPoolExecutor
+    +calculate(spec: ChartSpec, resolved: ResolvedBirthData, run: RunContext): CalculationResult
+    -_adapter_for(spec: ChartSpec, run_id: str): TechniqueAdapter
+  }
+
+  class _InFlight <<dataclass>> {
+    +task: asyncio.Task[ChartArtifact]
+    +leader_run_id: str
+    +started_at: float
+  }
+
+  class _DegradedOperation <<dataclass>> {
+    +degraded: bool
+    +started_at: float
+    +last_logged_at: float
+    +suppressed: int
+    +last_reason: str
+  }
+
+  class ChartArtifactResolver {
+    +cache: CalculationCache
+    +engine: CalculationEnginePort
+    +version: str
+    +hit_ratio: float
+    +ensure_chart(spec: ChartSpec, resolved: ResolvedBirthData, run: RunContext): ChartArtifact
+  }
+
+  class ArtifactError <<Exception>> {
+    +code: str
+    +run_id: str
+  }
+
+  class ChartCalculationError <<Exception>> {
+    +code: ChartCalculationErrorCode
+  }
+
+  class CalculationUnavailableError <<Exception>> {
+    +code: CalculationUnavailableErrorCode
+  }
+
+  class ChartCalculationErrorCode <<Literal>>
+  class CalculationUnavailableErrorCode <<Literal>>
+
+  class ChartArtifactDecodeError <<Exception>> {
+    +reason: ChartArtifactDecodeReason
+  }
+
+  class ChartArtifactDecodeReason <<Literal>>
+}
+
+ChartSpec ..> NatalChartSpec : alias
+NatalChartSpec --> ChartKind
+NatalChartSpec --> IncludeBlock
+NatalChartSpec --> RulershipScheme
+CalculationInput ..> ResolvedBirthData : projection
+InMemoryCalculationCache ..|> CalculationCache
+InMemoryCalculationCache *-- _CacheEntry
+ArtifactNatalChart --|> NatalChart
+ArtifactNatalChart *-- ArtifactEphemerisStatus
+ChartArtifact *-- ChartSpec
+ChartArtifact *-- ArtifactNatalChart
+ChartArtifact *-- CalculationWarning
+CalculationResult *-- NatalChart
+CalculationResult *-- CalculationWarning
+NatalTechniqueAdapter ..|> TechniqueAdapter
+NatalTechniqueAdapter --> CalculationResult
+EngineService ..|> CalculationEnginePort
+EngineService o-- TechniqueAdapter
+EngineService --> ChartSpec
+EngineService --> ResolvedBirthData
+EngineService --> RunContext
+ChartArtifactResolver --> CalculationCache
+ChartArtifactResolver --> CalculationEnginePort
+ChartArtifactResolver --> ChartArtifact
+ChartArtifactResolver --> ResolvedBirthData
+ChartArtifactResolver --> RunContext
+ChartArtifactResolver *-- _InFlight
+ChartArtifactResolver *-- _DegradedOperation
+ArtifactError <|-- ChartCalculationError
+ArtifactError <|-- CalculationUnavailableError
+ChartCalculationError --> ChartCalculationErrorCode
+CalculationUnavailableError --> CalculationUnavailableErrorCode
+ChartArtifactDecodeError --> ChartArtifactDecodeReason
+
+' =========================
+' ENGINE: EPHEMERIS
+' =========================
+
+package "exact_orb.engine.ephemeris" as ephemeris {
+  class ZodiacPosition <<Pydantic>> {
+    +longitude: float
+    +sign_index: int
+    +sign: str
+    +degree_in_sign: float
+    +degree: int
+    +minute: int
+    +second: int
+  }
+
+  class BodyPosition <<Pydantic>> {
+    +name: str
+    +chart: Literal["natal"]
+    +source: Literal
+    +method: str
+    +swe_id: int
+    +longitude: float
+    +latitude: float
+    +distance: float
+    +longitude_speed: float
+    +retrograde: bool
+    +house: int
+    +zodiac: ZodiacPosition
+    +retflags: int
+  }
+
+  class HouseCusp <<Pydantic>> {
+    +house: int
+    +longitude: float
+    +zodiac: ZodiacPosition
+  }
+
+  class AnglePosition <<Pydantic>> {
+    +name: str
+    +longitude: float
+    +zodiac: ZodiacPosition
+  }
+
+  class CalculationWarning <<Pydantic>> {
+    +source: str
+    +message: str
+    +retflags: int
+  }
+
+  interface SelenaMethod <<Protocol>> {
+    +name: str
+    +calculate(jd: float, flags: int): BodyPosition
+  }
+
+  class MeanPerigeeSelena {
+    +name: str
+    +apogee_id: int
+    +calculate(jd: float, flags: int): BodyPosition
+  }
+
+  class TruePerigeeSelena {
+    +name: str
+    +apogee_id: int
+    +calculate(jd: float, flags: int): BodyPosition
+  }
+}
+
+BodyPosition *-- ZodiacPosition
+HouseCusp *-- ZodiacPosition
+AnglePosition *-- ZodiacPosition
+MeanPerigeeSelena ..|> SelenaMethod
+TruePerigeeSelena ..|> SelenaMethod
+SelenaMethod --> BodyPosition
+
+' =========================
+' ENGINE: ASPECTS
+' =========================
+
+package "exact_orb.engine.aspects" as aspects {
+  enum AspectType {
+    CONJUNCTION
+    SEMISEXTILE
+    SEXTILE
+    SQUARE
+    TRINE
+    QUINCUNX
+    OPPOSITION
+  }
+
+  enum AspectCategory {
+    EXACT
+    WORKING
+    BACKGROUND
+  }
+
+  class AspectPointRef <<Pydantic>> {
+    +chart: str
+    +body: str
+  }
+
+  class PositionedPoint <<Pydantic>> {
+    +chart: str
+    +body: str
+    +longitude: float
+    +ref: AspectPointRef
+  }
+
+  class Aspect <<Pydantic>> {
+    +from_point: AspectPointRef
+    +to_point: AspectPointRef
+    +aspect_type: AspectType
+    +exact_angle: float
+    +orb: float
+    +category: AspectCategory
+    +applying: bool
+  }
+
+  class CategoryThresholds <<Pydantic>> {
+    +exact: float
+    +working: float
+  }
+
+  class AspectOrbSet <<Pydantic>> {
+    +max_orb: float
+    +aspect_orbs: dict[AspectType, float]
+    +body_orbs: dict[str, float]
+    +aspect_body_overrides: dict[AspectType, dict[str, float]]
+  }
+
+  class AspectConfig <<Pydantic>> {
+    +mode: Literal["natal", "transit"]
+    +categories: CategoryThresholds
+    +natal_orbs: AspectOrbSet
+    +transit_orbs: AspectOrbSet
+    +point_aliases: dict[str, str]
+    +natal_points: tuple[str]
+    +active_orbs: AspectOrbSet
+    +natal(max_orb: float): AspectConfig
+    +transit(max_orb: float): AspectConfig
+  }
+}
+
+PositionedPoint ..> AspectPointRef : ref()
+Aspect *-- AspectPointRef
+Aspect --> AspectType
+Aspect --> AspectCategory
+AspectConfig *-- CategoryThresholds
+AspectConfig *-- AspectOrbSet
+AspectOrbSet --> AspectType
+
+' =========================
+' ENGINE: CONFIGURATIONS
+' =========================
+
+package "exact_orb.engine.configurations" as configurations {
+  class PointKey <<TypeAlias>>
+
+  enum ConfigurationType {
+    T_SQUARE
+    YOD
+    BISEXTILE
+    GRAND_CROSS
+    GRAND_TRINE
+    TRAPEZE
+  }
+
+  enum ConfigurationCategory {
+    TIGHT
+    MODERATE
+    LOOSE
+  }
+
+  class ConfigurationCategoryThresholds <<Pydantic>> {
+    +tight: float
+    +moderate: float
+  }
+
+  class Configuration <<Pydantic>> {
+    +type: ConfigurationType
+    +points: dict[str, AspectPointRef]
+    +aspects: tuple[Aspect]
+    +max_orb: float
+    +category: ConfigurationCategory
+    +chart: str
+    +element: str
+    +modality: str
+    +contains: tuple[Configuration]
+  }
+
+  class ConfigurationConfig <<Pydantic>> {
+    +configuration_max_orb: float
+    +configuration_categories: ConfigurationCategoryThresholds
+    +include_nested: bool
+    +enabled_types: tuple[ConfigurationType]
+    +points: tuple[str]
+    +point_signs: dict[str, int]
+  }
+
+  class AspectGraph {
+    +points: tuple[PointKey]
+    +edges: dict
+    +point_ref(point: PointKey): AspectPointRef
+    +aspect_between(left: PointKey, right: PointKey, aspect_type: AspectType): Aspect
+    +edges_of_type(aspect_type: AspectType): tuple
+  }
+}
+
+Configuration --> ConfigurationType
+Configuration --> ConfigurationCategory
+Configuration *-- AspectPointRef
+Configuration *-- Aspect
+Configuration o-- Configuration : contains
+ConfigurationConfig *-- ConfigurationCategoryThresholds
+ConfigurationConfig --> ConfigurationType
+AspectGraph --> PointKey
+AspectGraph *-- Aspect
+AspectGraph *-- AspectPointRef
+AspectGraph --> AspectType
+
+' =========================
+' ENGINE: STRENGTH
+' =========================
+
+package "exact_orb.engine.strength" as strength {
+  enum DignityStatus {
+    DOMICILE
+    EXALTATION
+    DETRIMENT
+    FALL
+    PEREGRINE
+  }
+
+  enum StrengthCategory {
+    STRONG
+    MODERATE
+    WEAK
+  }
+
+  enum HouseType {
+    ANGULAR
+    SUCCEDENT
+    CADENT
+  }
+
+  enum BalanceState {
+    DEFICIT
+    BALANCED
+    EXCESS
+  }
+
+  class Dignity <<Pydantic>> {
+    +body: str
+    +sign: str
+    +system: Literal
+    +status: DignityStatus
+    +score: int
+  }
+
+  class AccidentalModifier <<Pydantic>> {
+    +name: str
+    +score: int
+  }
+
+  class AccidentalStrength <<Pydantic>> {
+    +body: str
+    +house: int
+    +house_type: HouseType
+    +house_score: int
+    +modifiers: tuple[AccidentalModifier]
+    +score: int
+  }
+
+  class PlanetStrength <<Pydantic>> {
+    +body: str
+    +dignity: Dignity
+    +accidental: AccidentalStrength
+    +essential_score: int
+    +accidental_score: int
+    +total: int
+    +category: StrengthCategory
+    +note: str
+  }
+
+  class BalanceBucket <<Pydantic>> {
+    +score: float
+    +percentage: float
+    +state: BalanceState
+    +contributors: tuple[str]
+  }
+
+  class HemisphereBalance <<Pydantic>> {
+    +north: float
+    +south: float
+    +east: float
+    +west: float
+  }
+
+  class HouseTypeBalance <<Pydantic>> {
+    +angular: float
+    +succedent: float
+    +cadent: float
+  }
+
+  class ChartBalance <<Pydantic>> {
+    +elements: dict[str, BalanceBucket]
+    +modalities: dict[str, BalanceBucket]
+    +hemispheres: HemisphereBalance
+    +house_types: HouseTypeBalance
+    +total_weight: float
+    +dominant_elements: tuple[str]
+    +deficient_elements: tuple[str]
+    +dominant_modalities: tuple[str]
+    +deficient_modalities: tuple[str]
+  }
+
+  class DispositorChain <<Pydantic>> {
+    +body: str
+    +chain: tuple[str]
+    +steps_to_cycle: int
+    +cycle: tuple[str]
+  }
+
+  class MutualReception <<Pydantic>> {
+    +body_1: str
+    +body_2: str
+  }
+
+  class LunarPhase <<Pydantic>> {
+    +elongation: float
+    +phase_number: int
+    +phase_name: str
+    +phase_start: float
+    +phase_end: float
+    +degrees_after_exact_opposition: float
+  }
+
+  class DegreeFlag <<Pydantic>> {
+    +point: str
+    +point_type: Literal
+    +longitude: float
+    +sign: str
+    +degree_in_sign: float
+    +is_zero_degree: bool
+    +is_anaretic: bool
+    +is_critical: bool
+  }
+
+  class InterceptionEntry <<Pydantic>> {
+    +sign: str
+    +house: int
+    +remaining_arc: float
+    +threshold: float
+  }
+
+  class InterceptionSummary <<Pydantic>> {
+    +intercepted: tuple[InterceptionEntry]
+    +near_intercepted: tuple[InterceptionEntry]
+  }
+
+  class NatalStrength <<Pydantic>> {
+    +dignity_system: Literal
+    +planets: dict[str, PlanetStrength]
+    +balance: ChartBalance
+    +dispositors: dict[str, DispositorChain]
+    +mutual_receptions: tuple[MutualReception]
+    +lunar_phase: LunarPhase
+    +degree_flags: tuple[DegreeFlag]
+    +interceptions: InterceptionSummary
+    +weak_note: str
+  }
+
+  class StrengthConfig <<Pydantic>> {
+    +dignity_system: Literal
+    +planets: tuple[str]
+    +house_scores: dict[HouseType, int]
+    +retrograde_modifier: int
+    +angle_conjunction_modifier: int
+    +strong_threshold: int
+    +weak_threshold: int
+    +balance_weights: dict[str, float]
+  }
+}
+
+Dignity --> DignityStatus
+AccidentalStrength --> HouseType
+AccidentalStrength *-- AccidentalModifier
+PlanetStrength *-- Dignity
+PlanetStrength *-- AccidentalStrength
+PlanetStrength --> StrengthCategory
+BalanceBucket --> BalanceState
+ChartBalance *-- BalanceBucket
+ChartBalance *-- HemisphereBalance
+ChartBalance *-- HouseTypeBalance
+InterceptionSummary *-- InterceptionEntry
+NatalStrength *-- PlanetStrength
+NatalStrength *-- ChartBalance
+NatalStrength *-- DispositorChain
+NatalStrength *-- MutualReception
+NatalStrength *-- LunarPhase
+NatalStrength *-- DegreeFlag
+NatalStrength *-- InterceptionSummary
+StrengthConfig --> HouseType
+
+' =========================
+' ENGINE: CHARTS
+' =========================
+
+package "exact_orb.engine.charts" as charts {
+  class Interception <<Pydantic>> {
+    +house: int
+    +sign_index: int
+    +sign: str
+    +start_longitude: float
+    +end_longitude: float
+    +rulers: tuple[str]
+    +fully_contained: bool
+    +near_interception: bool
+  }
+
+  class HouseRulers <<Pydantic>> {
+    +house: int
+    +cusp_sign_index: int
+    +cusp_sign: str
+    +rulers: tuple[str]
+    +intercepted_signs: tuple[str]
+    +co_rulers: tuple[str]
+  }
+
+  class NatalChart <<Pydantic>> {
+    +chart_kind: ChartKind
+    +datetime_utc: datetime
+    +julian_day_ut: float
+    +latitude: float
+    +longitude: float
+    +house_system: str
+    +ephemeris: EphemerisStatus
+    +bodies: dict[str, BodyPosition]
+    +cusps: tuple[HouseCusp]
+    +angles: dict[str, AnglePosition]
+    +house_rulers: tuple[HouseRulers]
+    +interceptions: tuple[Interception]
+    +aspects: tuple[Aspect]
+    +configurations: tuple[Configuration]
+    +strength: NatalStrength
+    +warnings: tuple[CalculationWarning]
+  }
+
+  class TransitLocation <<Pydantic>> {
+    +latitude: float
+    +longitude: float
+    +house_system: str
+  }
+
+  class TransitDateRange <<Pydantic>> {
+    +start: datetime
+    +end: datetime
+  }
+
+  class TransitPointRef <<Pydantic>> {
+    +chart: Literal["transit"]
+    +body: str
+  }
+
+  class NatalPointRef <<Pydantic>> {
+    +chart: Literal["natal"]
+    +body: str
+  }
+
+  class TransitBodyPosition <<Pydantic>> {
+    +chart: Literal["transit"]
+    +name: str
+    +swe_id: int
+    +longitude: float
+    +longitude_speed: float
+    +retrograde: bool
+    +natal_house: int
+    +zodiac: ZodiacPosition
+    +retflags: int
+  }
+
+  class ExactApproach <<Pydantic>> {
+    +datetime_utc: datetime
+    +orb: float
+  }
+
+  class TransitAspect <<Pydantic>> {
+    +from_point: TransitPointRef
+    +to: NatalPointRef
+    +aspect: AspectName
+    +aspect_angle: float
+    +orb: float
+    +applying: bool
+    +exact_dates: tuple[datetime]
+    +closest_approach: ExactApproach
+  }
+
+  class StationAspect <<Pydantic>> {
+    +to: NatalPointRef
+    +aspect: AspectName
+    +aspect_angle: float
+    +orb: float
+  }
+
+  class TransitStation <<Pydantic>> {
+    +chart: Literal["transit"]
+    +body: str
+    +type: Literal
+    +datetime_utc: datetime
+    +longitude: float
+    +longitude_speed: float
+    +zodiac: ZodiacPosition
+    +natal_aspects: tuple[StationAspect]
+  }
+
+  class TransitChart <<Pydantic>> {
+    +moment_utc: datetime
+    +window_start_utc: datetime
+    +window_end_utc: datetime
+    +natal_datetime_utc: datetime
+    +ephemeris: EphemerisStatus
+    +positions: dict[str, TransitBodyPosition]
+    +aspects: tuple[TransitAspect]
+    +stations: tuple[TransitStation]
+    +houses: tuple[HouseCusp]
+    +angles: dict[str, AnglePosition]
+    +warnings: tuple[CalculationWarning]
+  }
+
+  class AspectName <<TypeAlias>>
+}
+
+NatalChart --> ChartKind
+NatalChart *-- EphemerisStatus
+NatalChart *-- BodyPosition
+NatalChart *-- HouseCusp
+NatalChart *-- AnglePosition
+NatalChart *-- HouseRulers
+NatalChart *-- Interception
+NatalChart *-- Aspect
+NatalChart *-- Configuration
+NatalChart *-- NatalStrength
+NatalChart *-- CalculationWarning
+TransitBodyPosition *-- ZodiacPosition
+TransitAspect *-- TransitPointRef
+TransitAspect *-- NatalPointRef
+TransitAspect *-- ExactApproach
+TransitAspect --> AspectName
+StationAspect *-- NatalPointRef
+StationAspect --> AspectName
+TransitStation *-- StationAspect
+TransitStation *-- ZodiacPosition
+TransitChart *-- EphemerisStatus
+TransitChart *-- TransitBodyPosition
+TransitChart *-- TransitAspect
+TransitChart *-- TransitStation
+TransitChart *-- HouseCusp
+TransitChart *-- AnglePosition
+TransitChart *-- CalculationWarning
+AspectName ..> AspectType : alias
+
+' =========================
+' AGENT / INTERPRETATION / TOOLS
+' =========================
+
+package "exact_orb.intent" as intent {
+  class UserRequest <<Pydantic>> {
+    +text: str
+    +subject: dict[str, Any]
+  }
+
+  class InterpretationPlan <<Pydantic>> {
+    +intent: str
+    +focus: str
+    +required_tools: list[ToolRequest]
+    +data_selectors: list[str]
+    +prompt_recipe: str
+    +missing_slots: list[str]
+    +output_format: str
+    +confidence: float
+  }
+
+  abstract class Planner <<ABC>> {
+    +plan(request: UserRequest): InterpretationPlan
+  }
+}
+
+package "exact_orb.tools" as tools {
+  class ToolRequest <<Pydantic>> {
+    +tool_name: str
+    +args: dict[str, Any]
+  }
+
+  class ToolResult <<Pydantic>> {
+    +tool_name: str
+    +data: dict[str, Any]
+    +warnings: list[str]
+    +meta: dict[str, Any]
+  }
+
+  abstract class Tool <<ABC>> {
+    +name: str
+    +run(request: ToolRequest): ToolResult
+  }
+
+  class NatalToolArgs <<Pydantic>> {
+    +birth_datetime: datetime
+    +latitude: float
+    +longitude: float
+    +chart_kind: ChartKind
+    +house_system: str
+    +rulership: str
+    +include: tuple[str]
+  }
+
+  class NatalTool {
+    +name: str
+    +run(request: ToolRequest): ToolResult
+  }
+
+  class ToolRegistry {
+    -_tools: dict[str, Tool]
+    +default(): ToolRegistry
+    +register(tool: Tool): None
+    +get(name: str): Tool
+    +list_tools(): list[str]
+  }
+
+  class UnknownToolError <<Exception>>
+  class DuplicateToolError <<Exception>>
+  class InvalidToolError <<Exception>>
+}
+
+package "exact_orb.interpretation" as interpretation {
+  class PromptBundle <<Pydantic>> {
+    +system: str
+    +user: str
+    +recipe_id: str
+  }
+
+  abstract class DataSelector <<ABC>> {
+    +select(plan: InterpretationPlan, tool_results: list[ToolResult]): dict[str, Any]
+  }
+
+  abstract class PromptBuilder <<ABC>> {
+    +build(plan: InterpretationPlan, evidence: dict[str, Any]): PromptBundle
+  }
+
+  class PromptRegistry {
+    -_recipes: dict[str, Any]
+    +register(recipe_id: str, recipe: Any): None
+    +get(recipe_id: str): Any
+  }
+
+  class UnknownPromptRecipeError <<Exception>>
+  class DuplicatePromptRecipeError <<Exception>>
+  class InvalidPromptRecipeError <<Exception>>
+}
+
+package "exact_orb.orchestration" as orchestration {
+  class OrchestrationResponse <<Pydantic>> {
+    +text: str
+    +plan: InterpretationPlan
+    +warnings: list[str]
+    +meta: dict[str, Any]
+  }
+
+  class Orchestrator {
+    +planner: Planner
+    +tool_registry: ToolRegistry
+    +data_selector: DataSelector
+    +prompt_builder: PromptBuilder
+    +llm_complete: Callable
+    +handle(request: UserRequest): OrchestrationResponse
+  }
+}
+
+UserRequest <-- Planner
+Planner --> InterpretationPlan
+InterpretationPlan *-- ToolRequest
+Tool --> ToolRequest
+Tool --> ToolResult
+NatalTool --|> Tool
+NatalTool --> NatalToolArgs
+NatalTool --> NatalChart
+NatalToolArgs --> ChartKind
+ToolRegistry o-- Tool
+DataSelector --> InterpretationPlan
+DataSelector --> ToolResult
+PromptBuilder --> InterpretationPlan
+PromptBuilder --> PromptBundle
+OrchestrationResponse *-- InterpretationPlan
+Orchestrator o-- Planner
+Orchestrator o-- ToolRegistry
+Orchestrator o-- DataSelector
+Orchestrator o-- PromptBuilder
+Orchestrator --> UserRequest
+Orchestrator --> OrchestrationResponse
+
+' =========================
+' LLM, LOGGING AND CLI
+' =========================
+
+package "exact_orb.llm" as llm {
+  class LLMGatewayError <<Exception>>
+
+  class LLMResponse <<Pydantic>> {
+    +text: str
+    +model: str
+    +provider: str
+    +tokens_in: int
+    +tokens_out: int
+    +cost_usd: float
+    +latency_ms: float
+  }
+}
+
+package "exact_orb.logging_setup / cli" as support {
+  class LoggingSettings <<dataclass>> {
+    +level_name: str
+    +level: int
+    +log_dir: Path
+    +max_bytes: int
+    +retention_bytes: int
+  }
+
+  class LoggingState <<dataclass>> {
+    +settings: LoggingSettings
+    +file_logging: bool
+    +ephemeris_status: EphemerisStatus
+    +house_system_default: str
+  }
+
+  class SessionFilter {
+    +filter(record: LogRecord): bool
+  }
+
+  class UTCFormatter {
+    +formatTime(record: LogRecord, datefmt: str): str
+  }
+
+  class CompactStderrFormatter {
+    +format(record: LogRecord): str
+  }
+
+  class UTCSizeRotatingFileHandler {
+    +directory: Path
+    +stream_name: Literal
+    +max_bytes: int
+    +retention_bytes: int
+    +start(): None
+    +shouldRollover(record: LogRecord): bool
+    +doRollover(): None
+  }
+
+  class ParsedDateTime <<dataclass>> {
+    +local_datetime: datetime
+    +utc_datetime: datetime
+    +offset_label: str
+  }
+}
+
+LoggingState *-- LoggingSettings
+LoggingState *-- EphemerisStatus
+
+' =========================
+' HIGH-LEVEL CROSS-PACKAGE FLOWS
+' =========================
+
+BirthDataResolver -[#2563EB]-> ChartArtifactResolver : resolved birth data
+ChartArtifactResolver -[#2563EB]-> EngineService : cache miss
+EngineService -[#2563EB]-> NatalTechniqueAdapter : technique dispatch
+NatalTechniqueAdapter -[#2563EB]-> NatalChart : calculate_natal()
+NatalChart -[#2563EB]-> TransitChart : source for calculate_transits()
+Orchestrator -[#2563EB]-> ToolRegistry : resolve tools
+ToolRegistry -[#2563EB]-> NatalTool
+NatalTool -[#2563EB]-> NatalChart : local chart calculation
+Orchestrator -[#2563EB]-> PromptBuilder : evidence to prompt
+
+legend bottom
+<b>Legend</b>
+|= Mark |= Meaning |
+| <<Pydantic>> | Pydantic BaseModel DTO |
+| <<dataclass>> | Python dataclass |
+| <<Protocol>> | typing.Protocol boundary |
+| <<ABC>> | abstract base class |
+| <<Literal>> / <<TypeAlias>> | non-class typing contract shown for diagram completeness |
+| <|-- | inheritance |
+| ..|> | protocol/interface implementation |
+| *-- | composition/owned value |
+| o-- | aggregation/registry or injected collaborator |
+| --> | field, parameter, return type, or runtime dependency |
+endlegend
+
+@enduml
