@@ -39,9 +39,10 @@ pytestmark = pytest.mark.no_ephemeris_autoinit
 
 
 # Контрактный слой (L0): типы и чистые функции, разделяемые обеими
-# сторонами потенциального шва. `calculation.types`, `calculation.codec`
-# и `calculation.engine` сознательно выведены из контрактного слоя:
-# первые два зависят от payload/result-моделей, третий зовёт native engine.
+# сторонами потенциального шва. `calculation.types`, `calculation.codec`,
+# `calculation.engine` и `calculation.artifacts` сознательно выведены из
+# контрактного слоя: первые два зависят от payload/result-моделей, engine
+# зовёт native engine, artifacts оркестрирует engine/cache.
 CONTRACT_MODULES: tuple[str, ...] = (
     "exact_orb.domain",
     "exact_orb.errors",
@@ -83,6 +84,21 @@ CALCULATION_ENGINE_FORBIDDEN: tuple[str, ...] = (
     "exact_orb.llm",
     "exact_orb.orchestration",
     "exact_orb.tools",
+)
+
+CALCULATION_ARTIFACTS_FORBIDDEN: tuple[str, ...] = (
+    "exact_orb.cli",
+    "exact_orb.interpretation",
+    "exact_orb.llm",
+    "exact_orb.orchestration",
+    "exact_orb.tools",
+)
+
+CALCULATION_CACHE_FORBIDDEN: tuple[str, ...] = (
+    "exact_orb.calculation.artifacts",
+    "exact_orb.calculation.codec",
+    "exact_orb.calculation.engine",
+    "exact_orb.calculation.types",
 )
 
 
@@ -288,5 +304,43 @@ def test_calculation_engine_declares_no_artifact_cache_or_edge_imports() -> None
 
     assert not violations, (
         "calculation.engine импортирует запрещённые соседние слои: "
+        + ", ".join(violations)
+    )
+
+
+def test_calculation_artifacts_declares_no_edge_imports() -> None:
+    """Artifact resolver orchestrates calculation, but not UI/tool/LLM edges."""
+
+    path = PACKAGE_ROOT / "calculation" / "artifacts.py"
+    violations = sorted(
+        {
+            forbidden
+            for imported in _declared_imports(path)
+            for forbidden in CALCULATION_ARTIFACTS_FORBIDDEN
+            if _violates(imported, forbidden)
+        }
+    )
+
+    assert not violations, (
+        "calculation.artifacts импортирует запрещённые edge-слои: "
+        + ", ".join(violations)
+    )
+
+
+def test_calculation_cache_declares_no_artifact_payload_imports() -> None:
+    """Opaque byte cache must not know the artifact payload format."""
+
+    path = PACKAGE_ROOT / "calculation" / "cache.py"
+    violations = sorted(
+        {
+            forbidden
+            for imported in _declared_imports(path)
+            for forbidden in CALCULATION_CACHE_FORBIDDEN
+            if _violates(imported, forbidden)
+        }
+    )
+
+    assert not violations, (
+        "calculation.cache импортирует payload/artifact слои: "
         + ", ".join(violations)
     )

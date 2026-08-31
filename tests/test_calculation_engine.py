@@ -115,6 +115,19 @@ def test_engine_service_validates_registry_on_startup() -> None:
             EngineService(executor=executor, techniques={"natal": good}, slow_threshold_ms=0.0)
 
 
+@pytest.mark.parametrize("slow_threshold_ms", (float("nan"), float("inf"), -1.0))
+def test_engine_service_rejects_non_finite_or_negative_slow_threshold(
+    slow_threshold_ms: float,
+) -> None:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises(ValueError, match="slow_threshold_ms"):
+            EngineService(
+                executor=executor,
+                techniques={"natal": FakeAdapter(_result())},
+                slow_threshold_ms=slow_threshold_ms,
+            )
+
+
 def test_natal_technique_adapter_maps_current_spec_fields_without_run_or_artifact() -> None:
     received: dict[str, Any] = {}
     chart = _raw_chart(warnings=(_warning("engine warning"),))
