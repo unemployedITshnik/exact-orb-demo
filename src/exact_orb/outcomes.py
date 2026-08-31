@@ -32,7 +32,14 @@ class ResolutionUnavailable(BaseModel):
     retryable: bool = True
 
 
+class CalculationFailed(BaseModel):
+    """A chart calculation failed after deterministic input resolution."""
+
+    error_code: str
+
+
 __all__ = [
+    "CalculationFailed",
     "InputRequired",
     "Issue",
     "IssueCode",

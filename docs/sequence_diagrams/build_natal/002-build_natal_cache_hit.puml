@@ -89,14 +89,15 @@ Resolver --> Handler : ResolvedBirthData\n(идентичен предыдуще
 
 Handler -> Handler : ChartSpec(...)\nидентична предыдущей
 
-Handler -> Artifacts : ensure_chart(spec, resolved)
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
 activate Artifacts
 
-Artifacts -> Keys : calculation_key(resolved, spec,\nCALCULATION_VERSION)
+Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, CALCULATION_VERSION)
 Keys --> Artifacts : тот же key
 
 Artifacts -> Cache : get(key)
-Cache --> Artifacts : ChartArtifact — попадание
+Cache --> Artifacts : bytes — попадание
+Artifacts -> Artifacts : decode + validate\n→ ChartArtifact
 
 Artifacts --> Handler : ChartArtifact
 deactivate Artifacts

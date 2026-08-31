@@ -1,8 +1,12 @@
 @startuml
-title exact-orb — BuildNatal: первое построение, промах кэша
+title exact-orb — BuildNatal: сквозной путь от запроса до рендера
 
-' Текущая модель реализации (build_natal_components.md).
-' BuildAttempt отсутствует: актуальность держит CAS по profile_version.
+' Обзорная диаграмма: тот же сценарий, что build_natal/001, но с транспортным
+' участком (cookie, rate limit, run_id) и рендером на клиенте.
+' Детальный прикладной путь и разбор промаха кэша — в 001.
+'
+' Модель актуальна на дату правки: BuildAttempt отсутствует, актуальность
+' результата держит CAS по profile_version (ADR-0014, README build_charts).
 
 autonumber
 hide footbox
@@ -34,61 +38,82 @@ skinparam sequence {
     NoteFontColor #334155
 }
 
+
 actor "Пользователь" as User
 
-box "ТРАНСПОРТ" #DBEAFE
-    boundary "Frontend" as FE
-    boundary "Build API" as API
+
+box "1. CLIENT" #DBEAFE
+    boundary "Frontend" as Frontend
 end box
 
-box "APPLICATION" #FFEDD5
+
+box "2. API / TRANSPORT" #EDE9FE
+    boundary "Build API" as API
+    control "Session Middleware" as Session
+    control "RateLimiter" as RateLimiter
+end box
+
+
+box "3. APPLICATION" #FFEDD5
     control "ApplicationOrchestrator" as Orch
     control "BuildNatalHandler" as Handler
-end box
-
-box "РЕЗОЛВ" #D9F9FF
-    control "BirthDataResolver" as Resolver
-    control "PlaceCatalog" as Places
-    control "resolve_historical_tz" as TZ
-end box
-
-box "АРТЕФАКТЫ" #E8F5E9
-    control "ChartArtifactResolver" as Artifacts
-    control "calculation_key" as Keys
-    database "CalculationCache" as Cache
-end box
-
-box "РАСЧЁТ" #FFFFF0
-    control "EngineService" as Engine
-    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
-end box
-
-box "СЕССИЯ" #D1FAE5
     control "ProfileService" as Profile
+end box
+
+
+box "4. SESSION STATE" #D1FAE5
     control "ContextService" as Context
     database "SessionStore" as Store
 end box
 
 
-== Вход ==
+box "5. BIRTH DATA RESOLUTION" #D9F9FF
+    control "BirthDataResolver" as Resolver
+    control "PlaceCatalog" as Places
+    control "resolve_historical_tz" as TZ
+end box
 
-User -> FE : дата, время, город\n(город выбран из подсказок)
-FE -> API : POST /charts/natal\nBirthInput(birth_date, birth_time, place_id)
+
+box "6. CHART ARTIFACTS" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+
+box "7. CALCULATION" #FFFFF0
+    control "EngineService" as Engine
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+
+== Ввод и транспортные проверки ==
+
+User -> Frontend : дата, время, город\n(город выбран из подсказок)
+
+Frontend -> API : POST /charts/natal\nBirthInput(birth_date, birth_time, place_id)
+
+API -> Session : resolve_or_create(HttpOnly cookie)
+Session --> API : session_id
+
+API -> RateLimiter : check(ip, session_id, endpoint)
+RateLimiter --> API : RequestPermit
+
+API -> API : run_id = new_run_id()
+
 API -> Orch : BuildNatalCommand(session_id, birth_input)\n+ RunContext(run_id)
 
 note over API, Orch
-run_id создаётся транспортом до оркестратора:
-correlation scope по ADR-0006 начинается
-с API request, а резолв cookie и rate limit
-происходят раньше.
-
-В команду он не входит — команда описывает
-намерение, а run_id телеметрия.
-
 Build API принимает только place_id.
 Свободный текст места не принимается
 (ADR-0005), поэтому AMBIGUOUS
 на этом пути не возникает.
+
+run_id создаётся транспортом: correlation
+scope по ADR-0006 начинается с API request,
+а резолв cookie и rate limit происходят
+раньше. В команду он не входит — команда
+описывает намерение, run_id это телеметрия.
 end note
 
 
@@ -98,6 +123,12 @@ Orch -> Context : load(session_id)
 Context -> Store : get(session_id)
 Store --> Context : None
 Context --> Orch : SessionContext(profile = None)
+
+note right of Context
+Store возвращает SessionProfile | None.
+SessionContext собирает ContextService,
+чтобы None не расходился по вызывающим.
+end note
 
 Orch -> Orch : handler = handlers[BuildNatalCommand]
 
@@ -120,36 +151,21 @@ Places --> Resolver : Resolved(canonical_name,\nlatitude, longitude, tz_id)
 
 Resolver -> Resolver : local_datetime = birth_date + birth_time\n(при time_unknown — местный полдень)
 
-Resolver -> TZ : resolve_historical_tz(\nlocal_datetime, tz_id)
+Resolver -> TZ : resolve_historical_tz(local_datetime, tz_id)
 TZ --> Resolver : TzOk(utc_datetime,\nutc_offset_applied, warnings)
 
 Resolver --> Handler : ResolvedBirthData\n(time_unknown = false)
 deactivate Resolver
 
-note over Places, TZ
-tz_id из каталога нужен дважды:
-как вход исторического смещения
-и как хранимое поле ResolvedBirthData
-(ADR-0005).
-
-Координаты функции времени не нужны:
-«координаты → tz_id» — географическая
-задача и данные границ зон,
-«время + tz_id → UTC» — временная
-и база IANA. Каталог владеет «где»,
-функция — «когда».
-end note
-
 note over Resolver, TZ
-Резолвер в состояние не пишет.
-Историческое смещение обязательно:
-02.09.1990 Москва — UTC+4, не UTC+3.
+Резолвер в состояние не пишет и к кэшу
+не обращается. Историческое смещение
+обязательно: 02.09.1990 Москва — UTC+4.
 
-Гарантия tzdb действует только
-с 1970-01-01. Для более ранних дат
-TzOk несёт warning
-pre_1970_offset_unverified,
-который по И-7 доходит до промпта.
+Гарантия tzdb действует с 1970-01-01;
+для более ранних дат TzOk несёт warning
+pre_1970_offset_unverified, который
+по И-7 доходит до промпта.
 end note
 
 
@@ -175,6 +191,12 @@ Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, C
 Keys --> Artifacts : key
 
 note right of Keys
+Ключ строится из проекции
+CalculationInput (utc_datetime,
+latitude, longitude), а не из всего
+ResolvedBirthData: canonical_place
+и warnings в ключ не входят (§4.2).
+
 CALCULATION_VERSION =
   ENGINE_VERSION
 + версия содержимого профилей
@@ -183,8 +205,7 @@ CALCULATION_VERSION =
 + sha256(native module)
 + sha256(ephe/*.se1)
 
-Чистая функция без состояния
-(ADR-0017).
+Чистая функция без состояния (ADR-0017).
 end note
 
 Artifacts -> Cache : get(key)
@@ -196,11 +217,13 @@ activate Engine
 Engine -> Engine : run_in_executor(executor, ...)
 
 note right of Engine
-ephemeris_session() — process-wide
-RLock. Захват из корутины заблокировал
-бы event loop: async def сам по себе
-CPU-bound работу не распараллеливает
-(ADR-0012).
+ephemeris_session() — process-wide RLock.
+Захват из корутины заблокировал бы event
+loop: async def сам по себе CPU-bound
+работу не распараллеливает (ADR-0012).
+
+run_id передаётся явным аргументом:
+run_in_executor не копирует contextvars.
 end note
 
 Engine -> Swiss : with ephemeris_session():\ncalculate_natal(...)
@@ -215,9 +238,15 @@ Artifacts --> Handler : ChartArtifact
 deactivate Artifacts
 
 note over Artifacts, Cache
+Вызов ensure_chart скрывает тело:
+key → get → miss → calculate
+→ build artifact → encode → put.
+Handler кэша не видит и знает
+только ensure_chart.
+
 Кэш, а не репозиторий: после eviction
 артефакт воспроизводится из ChartSpec
-и ResolvedBirthData (И-12).
+и ResolvedBirthData (ADR-0017, И-12).
 end note
 
 
@@ -229,11 +258,23 @@ Profile --> Handler : ContextDelta(profile,\nexpected_version = 0)
 note over Handler, Profile
 ProfileService выполняет чистую мутацию
 и не имеет собственного хранилища.
-Версию присвоит store (ADR-0014).
+
+Версию он НЕ присваивает: в дельте лежит
+expected_version — версия, при которой
+операция началась. Новую версию присвоит
+store атомарно в CAS (ADR-0014).
 end note
 
 Handler --> Orch : BuildNatalSuccess(artifact, delta)
 deactivate Handler
+
+note right of Handler
+Handler не получает ни SessionStore,
+ни ContextService: вход — аргумент
+context, выход — ContextDelta.
+Одна запись на операцию — условие
+корректности CAS.
+end note
 
 
 == Commit состояния ==
@@ -243,19 +284,25 @@ Context -> Store : compare_and_set(session_id, profile,\nexpected_version = 0)
 Store --> Context : profile_version = 1
 Context --> Orch : 1
 
+note over Context, Store
+Версия присваивается здесь и только здесь.
+Устаревшая expected_version дала бы
+VersionConflict → Superseded (см. 006).
+end note
 
-== Ответ ==
+
+== Ответ клиенту ==
 
 Orch --> API : Success(chart,\nprofile_version = 1, active_view = base)
-API --> FE : 200 JSON
-FE -> FE : render natal SVG
-FE --> User : натальная карта
+API --> Frontend : 200 JSON
+
+Frontend -> Frontend : render natal SVG
+Frontend --> User : натальная карта
 
 note over Orch, Swiss
-Agent Runtime не запускается.
-Planner, ScenarioRegistry, ToolExecutor
-и LLM на этом пути отсутствуют
-(ADR-0012, ADR-0020).
+Agent Runtime не запускается: Planner,
+ScenarioRegistry, ToolExecutor и LLM
+на этом пути отсутствуют (ADR-0012, ADR-0020).
 
 Success возвращается только после
 подтверждённого commit: успешный расчёт

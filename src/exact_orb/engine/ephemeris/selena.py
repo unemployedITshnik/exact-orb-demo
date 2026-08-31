@@ -95,12 +95,12 @@ def _calculate_perigee_selena(
         raise RuntimeError(f"swe.calc_ut returned {len(xx)} values for Selena apogee, expected 6")
     if warning:
         LOGGER.warning(
-            "Swiss Ephemeris warning source=%s retflags=%s message=%s",
+            "Swiss Ephemeris warning source=%s retflags=%s message_present=%s",
             "selena",
             retflags,
-            warning,
+            True,
         )
-        raise RuntimeError(f"could not calculate Selena without ephemeris fallback: {warning}")
+        raise RuntimeError("could not calculate Selena without ephemeris fallback")
 
     longitude = normalize_degrees(xx[0] + 180.0)
     return BodyPosition(

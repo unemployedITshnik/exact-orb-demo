@@ -8,6 +8,11 @@ from math import isfinite
 from typing import Mapping
 
 from exact_orb import swiss_backend
+from exact_orb.domain import (
+    RulershipScheme,
+    normalize_house_system_code,
+    validate_geography as _validate_geography,
+)
 
 from .runtime import require_ephemeris_session
 from .types import (
@@ -23,7 +28,6 @@ from .types import (
     BodyPosition,
     CalculationWarning,
     HouseCusp,
-    RulershipScheme,
     ZodiacPosition,
 )
 
@@ -32,21 +36,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 def validate_geography(latitude: float, longitude: float) -> None:
-    if not isfinite(latitude) or not -90.0 <= latitude <= 90.0:
-        raise ValueError("latitude must be a finite value in [-90, 90]")
-    if not isfinite(longitude) or not -180.0 <= longitude <= 180.0:
-        raise ValueError("longitude must be a finite value in [-180, 180]")
+    _validate_geography(latitude, longitude)
 
 
 def normalize_house_system(house_system: str | bytes) -> bytes:
-    if isinstance(house_system, str):
-        house_system_bytes = house_system.encode("ascii")
-    else:
-        house_system_bytes = bytes(house_system)
-
-    if len(house_system_bytes) != 1:
-        raise ValueError("house_system must be a single ASCII character or one byte")
-    return house_system_bytes
+    return normalize_house_system_code(house_system).encode("ascii")
 
 
 def to_utc(value: datetime) -> datetime:
@@ -99,10 +93,10 @@ def calculate_bodies(
         if warning:
             warnings.append(CalculationWarning(source=name, message=warning, retflags=retflags))
             LOGGER.warning(
-                "Swiss Ephemeris warning source=%s retflags=%s message=%s",
+                "Swiss Ephemeris warning source=%s retflags=%s message_present=%s",
                 name,
                 retflags,
-                warning,
+                True,
             )
 
         bodies[name] = BodyPosition(
@@ -122,12 +116,9 @@ def calculate_bodies(
             retflags=retflags,
         )
         LOGGER.debug(
-            "body_calculated name=%s swe_id=%s longitude=%.6f latitude=%.6f speed=%.6f house=%s retflags=%s",
+            "body_calculated name=%s swe_id=%s house=%s retflags=%s",
             name,
             body_id,
-            longitude_value,
-            xx[1],
-            xx[3],
             bodies[name].house,
             retflags,
         )

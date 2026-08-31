@@ -24,7 +24,7 @@ ADR-0009 и ADR-0010.
 
 ```
 ActiveChart { profile_version, spec: ChartSpec }
-calculation_key = KeyFactory(ResolvedBirthData, ChartSpec, CalculationVersion)
+calculation_key = KeyFactory(CalculationInput, ChartSpec, CalculationVersion)
 ```
 
 Без этого активная транзитная карта после eviction невосстановима: момент
@@ -32,12 +32,24 @@ calculation_key = KeyFactory(ResolvedBirthData, ChartSpec, CalculationVersion)
 артефакта.
 
 **`CalculationVersion`** — отпечаток версии расчёта: код движка, версия
-`swisseph`, fingerprint файлов `ephe/*.se1`. Без версии эфемерид обновление
-данных не инвалидирует кэш: golden tests останутся зелёными, потому что считают
-заново, а пользователи будут видеть карты, посчитанные по прежней базе.
+числовых профилей, версия `swisseph`, имя/версия установленного биндинга,
+fingerprint нативного модуля и fingerprint файлов `ephe/*.se1`. Без версии
+эфемерид обновление данных не инвалидирует кэш: golden tests останутся
+зелёными, потому что считают заново, а пользователи будут видеть карты,
+посчитанные по прежней базе.
 
 Историческое смещение отдельной версии не требует: `tzdata` влияет
 на `utc_datetime` внутри `ResolvedBirthData`, который уже входит в ключ.
+
+`CalculationInput` — проекция из `ResolvedBirthData`, содержащая только
+численно значимые поля расчёта (`utc_datetime`, `latitude`, `longitude`).
+`canonical_place`, `place_id`, `tz_id` и предупреждения резолва в ключ
+не входят.
+
+**Форма значения.** Calculation Cache хранит serialized payload bytes,
+а не pydantic-объекты: логическое значение — `ChartArtifact`, физическое —
+gzip-6 от JSON UTF-8. Decode/validate принадлежит артефактному слою; кэш
+остаётся opaque binary KV.
 
 **Interpretation Cache** живёт по другим правилам. Для preset ключ —
 `artifact keys + recipe version + topic + focus`, запись разделяема между
@@ -58,6 +70,8 @@ calculation_key = KeyFactory(ResolvedBirthData, ChartSpec, CalculationVersion)
 - Кэш можно очищать целиком в любой момент, в том числе при деплое.
 - `CalculationKeyFactory` — чистая функция без обращений к состоянию.
 - Обновление эфемерид инвалидирует кэш автоматически.
+- In-memory и Redis используют один формат значения: `bytes`, а не объектную
+  модель в одном случае и JSON в другом.
 - Calculation Cache TTL не обязан превосходить session TTL: промах восстановим.
 - Free-form записи умирают вместе с сессией, что согласуется с ADR-0009
   и ADR-0010.

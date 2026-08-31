@@ -1,0 +1,182 @@
+@startuml
+title exact-orb — A-2: ensure_chart, попадание в кэш
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildNatalHandler" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
+activate Artifacts
+
+note over Handler, Artifacts
+Типичные источники попадания:
+переоткрытие сессии по ChartRef.spec,
+несколько topic'ов интерпретации
+по одной карте, множество транзитных
+моментов на одном натале (ADR-0016),
+синастрия поверх готового натала.
+end note
+
+Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, CALCULATION_VERSION)
+Keys --> Artifacts : key
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : gzip-сжатые байты JSON
+
+Artifacts -> Artifacts : gzip.decompress → JSON\n→ ChartArtifact.model_validate_json\n≈ 0.5 мс
+
+note right of Artifacts
+Кэш хранит не объект модели, а сжатый
+JSON (§8.4), поэтому попадание требует
+обратного преобразования: разжать
+и разобрать.
+
+Причина — память: объект ChartArtifact
+занимает 264 КБ, его JSON — 37 КБ,
+сжатый JSON — 5.7 КБ. Тысяча записей:
+260 МБ против 6 МБ.
+
+Цена — 0.05 мс на разжатие и 0.45 мс
+на разбор против 16 мс расчёта.
+end note
+
+
+== Проверка пригодности записи ==
+
+Artifacts -> Artifacts : hit.calculation_version == self.version?\nhit.calculation_key == key?
+
+note over Artifacts, Cache
+Ветви ниже взаимоисключающие:
+в одном исполнении происходит
+ровно одна. Вторая — аварийная.
+end note
+
+alt оба равенства выполнены — нормальный путь
+    Artifacts -> Artifacts : журнал: cache_hit(run_id, key)
+    Artifacts --> Handler : ChartArtifact
+    deactivate Artifacts
+
+    note right of Artifacts
+    Движок не вызывается ни разу.
+    put не выполняется.
+
+    Каждое попадание порождает новый
+    объект из байтов, поэтому
+    одновременные вызывающие
+    физически не делят экземпляр (§8.4).
+    end note
+
+else не совпало — в исправной системе невозможно
+    Artifacts -> Artifacts : журнал: cache_stale(run_id, key,\nверсия записи) + АЛЕРТ
+
+    Artifacts -> Artifacts : запись отбрасывается,\nдальше — как при промахе
+
+    Artifacts -> Engine : calculate(spec, resolved, run)
+    Engine --> Artifacts : CalculationResult
+
+    Artifacts -> Cache : put(key, bytes)\n— заменит негодную запись
+
+    Artifacts --> Handler : ChartArtifact
+    deactivate Artifacts
+
+    note right of Artifacts
+    Эта ветка не про деплой. CALCULATION_VERSION
+    входит в хэш ключа: после выкатки те же данные
+    дают ДРУГОЙ ключ, и записи прежней версии просто
+    недостижимы. Они занимают память до TTL
+    (§8.5), но подсунуться на попадании не могут.
+
+    Несовпадение возможно только если ключ перестал
+    честно кодировать входы:
+      • дефект в calculation_key — выпала version,
+        изменился состав или порядок сериализации;
+      • коллизия namespace — stage и prod на одном
+        Redis, либо неизменённый v1 после смены
+        формата ключа;
+      • повреждение значения в хранилище.
+
+    Поэтому срабатывание — сигнал тревоги, а не
+    рутина: пишем отдельным кодом и алертим, иначе
+    испорченный ключ будет молча ронять hit_ratio,
+    и это спишут на «холодный кэш» (§3.2.3).
+    end note
+
+else payload не читается
+    Artifacts -> Artifacts : журнал: cache_corrupt(run_id, key,\nreason) + АЛЕРТ
+
+    Artifacts -> Engine : calculate(spec, resolved, run)
+    Engine --> Artifacts : CalculationResult
+
+    Artifacts -> Cache : put(key, bytes)
+
+    Artifacts --> Handler : ChartArtifact
+    deactivate Artifacts
+
+    note right of Artifacts
+    Байты не распаковались, не оказались
+    валидным UTF-8 JSON или не прошли
+    model_validate_json.
+
+    Отдельное событие, а не cache_stale:
+    это разные диагнозы и разные действия.
+      stale   — payload валиден, но не тот:
+                дефект ключа или коллизия namespace
+      corrupt — payload не читается: повреждение
+                хранилища, рассогласование кодека,
+                чужой формат в том же namespace
+
+    Слитые в одно событие, они дадут алерт,
+    по которому непонятно, куда смотреть (§3.2.4).
+    end note
+end
+
+note over Cache, Engine
+Стоимость попадания ≈ 0.5 мс против
+16 мс промаха: попадание в тридцать
+с лишним раз дешевле расчёта, и это
+единственная причина, по которой кэш
+вообще существует (§8.6).
+end note
+
+@enduml

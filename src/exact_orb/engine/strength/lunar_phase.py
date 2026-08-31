@@ -40,10 +40,7 @@ def calculate_lunar_phase(sun_longitude: float, moon_longitude: float) -> LunarP
         degrees_after_exact_opposition=elongation - 180.0 if phase_index == 4 else None,
     )
     LOGGER.debug(
-        "calculate_lunar_phase sun_longitude=%.6f moon_longitude=%.6f elongation=%.6f phase=%s",
-        sun_longitude,
-        moon_longitude,
-        elongation,
+        "calculate_lunar_phase phase=%s",
         result.phase_name,
     )
     return result

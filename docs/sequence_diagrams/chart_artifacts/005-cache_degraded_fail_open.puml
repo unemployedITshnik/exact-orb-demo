@@ -1,0 +1,177 @@
+@startuml
+title exact-orb — A-5: отказы кэша, fail-open и дросселирование журнала
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "Application caller" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+box "НАБЛЮДАЕМОСТЬ" #F1F5F9
+    control "Журнал / метрики" as Log
+end box
+
+
+note over Handler, Log
+Сценарий актуален для Redis: в памяти
+процесса get и put практически не падают.
+Заложить поведение нужно сейчас — при
+переходе оно ломается первым (§9.4).
+end note
+
+
+== Отказ get ==
+
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
+activate Artifacts
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : ConnectionError\nили превышен cache_timeout_ms
+
+note right of Cache
+Таймаут обязателен и живёт ВНУТРИ
+адаптера кэша: зависший get к Redis
+не бросит исключение быстро, он будет
+ждать. Для in-memory это no-op.
+
+cache_timeout_ms = 50 при T = 16 мс:
+нормальный get по локальной сети —
+доли миллисекунды, так что порог
+срабатывает только при настоящей беде.
+
+Это НЕ таймаут расчёта: сетевой вызов
+прерывается корректно, CPU-bound задача
+в потоке — нет (§3.2.1, §3.4.3).
+end note
+
+Artifacts -> Artifacts : except → трактуем как ПРОМАХ
+
+Artifacts -> Log : cache_degraded(run_id, op=get, reason)\nWARNING, немедленно
+Artifacts -> Log : cache_errors_total += 1
+
+note right of Artifacts
+Кэш не источник истины: его недоступность
+не является отказом операции (§3.2.1).
+end note
+
+Artifacts -> Engine : calculate(spec, resolved, run)
+Engine --> Artifacts : CalculationResult
+
+
+== Отказ put ==
+
+Artifacts -> Cache : put(key, bytes)
+Cache --> Artifacts : ConnectionError / maxmemory
+
+Artifacts -> Log : cache_put_failed(run_id, key, reason)
+Artifacts -> Log : cache_errors_total += 1
+
+Artifacts --> Handler : ChartArtifact
+deactivate Artifacts
+
+note over Artifacts, Handler
+Порядок обязателен: сначала гарантирован
+результат, потом побочный эффект.
+
+Вызывающий получает корректный артефакт
+и об отказе кэша не узнаёт — для него
+операция успешна, потому что она успешна
+(§5.5).
+end note
+
+
+== Следующие запросы: дросселирование ==
+
+loop отказы продолжаются, интервал 60 с не истёк
+    Handler -> Artifacts : ensure_chart(...)
+    Artifacts -> Cache : get(key)
+    Cache --> Artifacts : ошибка
+    Artifacts -> Log : cache_errors_total += 1
+    Artifacts -> Artifacts : запись в журнал ПОДАВЛЕНА,\nsuppressed += 1
+    Artifacts -> Engine : calculate(...)
+    Artifacts --> Handler : ChartArtifact
+end
+
+Artifacts -> Log : cache_degraded(run_id, op=get,\nreason, suppressed = N за 60 с)
+
+note right of Log
+Дросселируется журнал, но НЕ метрика.
+
+Счётчик растёт на каждом отказе: график
+обязан показывать реальный масштаб,
+пока лог показывает строку в минуту
+(§7.1.5).
+
+Состояние дросселя живёт в резолвере —
+там же, где try/except вокруг get и put.
+Кэш не знает, что его отказ кем-то
+обрабатывается.
+end note
+
+
+== Восстановление ==
+
+Handler -> Artifacts : ensure_chart(...)
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : bytes — попадание
+
+Artifacts -> Log : cache_recovered(run_id, op=get,\nдлительность деградации)
+
+note over Artifacts, Log
+Без этой записи по журналу невозможно
+понять, когда починилось, — а это первое,
+что спросят при разборе (§7.1.4).
+end note
+
+
+== Устойчивая недоступность кэша ==
+
+note over Handler, Engine
+Система деградирует в «считать всегда»:
+медленно, но корректно. Операции успешны,
+растёт только время ответа.
+
+Single-flight при этом остаётся последней
+линией защиты: параллельные промахи
+по одному ключу по-прежнему схлопываются
+в один расчёт (§5.7).
+end note
+
+@enduml

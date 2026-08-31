@@ -1,0 +1,216 @@
+@startuml
+title exact-orb — A-1: ensure_chart, промах кэша и успешный расчёт
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildNatalHandler" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+    control "NatalTechniqueAdapter" as Adapter
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+
+Handler -> Artifacts : ensure_chart(\nspec = NatalChartSpec(chart_kind = "natal", ...),\nresolved = ResolvedBirthData(...),\nrun = RunContext(run_id))
+activate Artifacts
+
+note over Handler, Artifacts
+На вход приходит уже валидированный
+ResolvedBirthData: резолв места и времени
+завершён до входа в модуль.
+
+run_id — явный аргумент, не contextvars:
+run_in_executor контекст не копирует,
+и записи из расчётного потока остались бы
+без корреляции (§2.4).
+end note
+
+
+== 1. Ключ ==
+
+Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, CALCULATION_VERSION)
+
+Keys -> Keys : проекция: utc_datetime,\nlatitude, longitude\n(6 знаков, без микросекунд)
+Keys -> Keys : канонический JSON,\ninclude — отсортированный кортеж
+
+Keys --> Artifacts : "eo:calc:v1:<sha256>"
+
+note right of Keys
+В ключ уходит проекция, а не весь
+ResolvedBirthData: canonical_place
+и warnings меняются от пересборки
+каталога и обновления tzdata,
+не меняя ни одного числа (§3.1.2).
+
+CALCULATION_VERSION (§3.1.5) =
+  ENGINE_VERSION
++ версия содержимого orb/aspect/
+  configuration/strength профилей
++ swisseph.version
++ имя и версия дистрибутива биндинга
++ sha256(native module)
++ sha256(ephe/*.se1)
+
+Чистая функция: ни кэша, ни часов,
+ни окружения.
+end note
+
+
+== 2. Кэш ==
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Artifacts : журнал: cache_miss(run_id, key)
+
+
+== 3. Дедупликация ==
+
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(...), leader_run_id = run_id)\n— этот вызов лидер
+
+note right of Artifacts
+Single-flight принадлежит резолверу,
+а не кэшу: кэш знает про записи,
+но не про идущий расчёт (§3.3).
+
+Параллельный вызов по этому ключу
+пойдёт ждать task — сценарий A-4.
+end note
+
+
+== 4. Расчёт ==
+
+Artifacts -> Engine : calculate(spec, resolved, run)
+activate Engine
+
+Engine -> Engine : предпроверка: include ↔ chart_kind,\nкоординаты, near_interception_threshold,\nhouse_system, rulership, selena_method,\nналичие orb_profile
+
+note right of Engine
+Проверяется ВСЁ, что не требует
+обращения к Swiss Ephemeris, и делается
+это ДО отправки в executor.
+
+Внутри calculate_natal() те же проверки
+стоят уже под process-wide RLock, и
+невалидная спека занимала бы единственный
+расчётный слот процесса, чтобы через
+миллисекунду упасть (§2.3).
+
+Ядро свои проверки сохраняет как защиту
+от прямых вызовов.
+end note
+
+Engine -> Engine : adapter = techniques[spec.technique]
+
+note right of Engine
+Выбор техники — здесь и только здесь.
+Реестр наполняется в bootstrap
+и дальше только читается (И-9).
+
+Резолвер про технику не знает,
+handler — не знает про функцию ядра.
+end note
+
+Engine -> Engine : await loop.run_in_executor(executor, ...)
+
+Engine -> Adapter : calculate(spec, resolved)
+activate Adapter
+
+Adapter -> Adapter : маппинг спеки в аргументы:\nhouse_system, rulership, include,\nselena_method, orb_profile
+
+Adapter -> Swiss : with ephemeris_session():\ncalculate_natal(...)
+Swiss --> Adapter : NatalChart(warnings)
+
+Adapter --> Engine : CalculationResult(\nchart_kind, chart, warnings)
+deactivate Adapter
+
+Engine --> Artifacts : CalculationResult
+deactivate Engine
+
+note over Engine, Swiss
+ephemeris_session() — process-wide RLock:
+расчёты сериализованы по всему процессу.
+Замер: T = 16 мс, то есть ~62 карты/с
+и ~80 мс ожидания для пятого
+одновременного промаха (§8.1).
+end note
+
+
+== 5. Сборка артефакта ==
+
+Artifacts -> Artifacts : ChartArtifact(\ncalculation_key = key,\ncalculation_version = self.version,\nspec, chart_kind, chart, warnings)
+
+note right of Artifacts
+Поля идентичности добавляет резолвер:
+движок ключа и версии не знает.
+
+Поэтому движок возвращает
+CalculationResult, а не ChartArtifact
+(§4, поправка к build_natal_components §4.4).
+end note
+
+
+== 6. Запись ==
+
+Artifacts -> Cache : put(key, gzip(artifact.model_dump_json()))
+Cache --> Artifacts : ok
+
+note over Artifacts, Cache
+Кэш хранит байты, а не объект модели:
+264 КБ объекта против 5.7 КБ сжатого JSON,
+разбор 0.45 мс против 16 мс расчёта (§8.4).
+
+put по существующему ключу заменяет
+запись, а не добавляет вторую.
+end note
+
+Artifacts -> Artifacts : finally внутри task:\ninflight.pop(key)
+
+Artifacts --> Handler : ChartArtifact
+deactivate Artifacts
+
+note over Handler
+Резолвер в сессию не пишет, profile_version
+не знает и не решает, становится ли карта
+активной. Это работа handler'а
+и ProfileService.
+end note
+
+@enduml

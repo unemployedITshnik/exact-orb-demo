@@ -100,11 +100,11 @@ else Отказ расчётного ядра
     Handler -> Resolver : resolve(birth_input)
     Resolver --> Handler : ResolvedBirthData
 
-    Handler -> Artifacts : ensure_chart(spec, resolved)
+    Handler -> Artifacts : ensure_chart(spec, resolved, run)
     Artifacts -> Cache : get(key)
     Cache --> Artifacts : None — промах
 
-    Artifacts -> Engine : calculate(spec, resolved)
+    Artifacts -> Engine : calculate(spec, resolved, run)
     Engine -> Swiss : calculate_natal(...)
     Swiss -[#C62828]-> Engine : ValueError
 
