@@ -74,10 +74,11 @@ Context --> Orch : SessionContext
 Orch -> Handler : handle(command, context)
 activate Handler
 
-Handler -> Artifacts : ensure_chart(spec, resolved)
-Artifacts -> Engine : calculate(spec, resolved)
-Engine --> Artifacts : ChartArtifact
-Artifacts -> Cache : put(key, artifact)
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
+Artifacts -> Engine : calculate(spec, resolved, run)
+Engine --> Artifacts : CalculationResult
+Artifacts -> Artifacts : ChartArtifact(key, version, result)
+Artifacts -> Cache : put(key, bytes)
 Artifacts --> Handler : ChartArtifact
 
 Handler -> Profile : commit_base_chart(...)

@@ -11,6 +11,13 @@ from pydantic import BaseModel, Field
 
 from exact_orb import swiss_backend
 from exact_orb.config import EphemerisStatus, get_selena_method_name, validate_ephemeris_path
+from exact_orb.domain import (
+    ChartKind,
+    DEFAULT_INCLUDE_BY_CHART_KIND,
+    INCLUDE_BLOCKS,
+    RulershipScheme,
+    normalize_include as normalize_domain_include,
+)
 from exact_orb.engine.aspects import Aspect, AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.configurations import Configuration, ConfigurationConfig, find_configurations
 from exact_orb.engine.ephemeris.calc import (
@@ -35,7 +42,6 @@ from exact_orb.engine.ephemeris.types import (
     BodyPosition,
     CalculationWarning,
     HouseCusp,
-    RulershipScheme,
 )
 from exact_orb.engine.strength import (
     NatalStrength,
@@ -56,11 +62,7 @@ from exact_orb.engine.strength.types import (
 
 
 LOGGER = logging.getLogger(__name__)
-ChartKind = Literal["natal", "cosmogram"]
-DEFAULT_INCLUDE = frozenset(
-    {"positions", "houses", "rulers", "aspects", "configurations", "strength"}
-)
-INCLUDE_BLOCKS = DEFAULT_INCLUDE
+DEFAULT_INCLUDE = frozenset(DEFAULT_INCLUDE_BY_CHART_KIND["natal"])
 
 
 class Interception(BaseModel):
@@ -182,27 +184,22 @@ def _calculate_natal(
 
     started_at = perf_counter()
     LOGGER.debug(
-        "calculate_natal start chart_kind=%s birth_datetime=%s latitude=%.6f longitude=%.6f house_system=%s "
-        "rulership=%s include=%s ephemeris_path=%s",
+        "calculate_natal start chart_kind=%s house_system=%s rulership=%s include=%s",
         chart_kind,
-        birth_datetime.isoformat(),
-        latitude,
-        longitude,
         house_system,
         rulership,
         sorted(include) if include is not None else None,
-        ephemeris_path,
     )
-    include_blocks = _normalize_include(include)
+    include_blocks = _normalize_include(chart_kind, include)
     _validate_chart_kind_include(chart_kind, include_blocks)
     houses_included = "houses" in include_blocks
     ephemeris = validate_ephemeris_path(ephemeris_path)
+    swiss_backend.swe.set_ephe_path(ephemeris.path)
     LOGGER.debug(
-        "ephemeris configured mode=%s source=%s path=%s missing=%s",
+        "ephemeris configured mode=%s source=%s missing_count=%d",
         ephemeris.mode,
         ephemeris.source,
-        ephemeris.path,
-        ephemeris.missing_files,
+        len(ephemeris.missing_files),
     )
     configured_selena_method = get_selena_method_name(selena_method)
     validate_geography(latitude, longitude)
@@ -347,19 +344,8 @@ def _calculate_natal(
     return chart
 
 
-def _normalize_include(include: AbstractSet[str] | None) -> frozenset[str]:
-    if include is None:
-        return DEFAULT_INCLUDE
-
-    include_blocks = frozenset(include)
-    unknown = include_blocks - INCLUDE_BLOCKS
-    if unknown:
-        raise ValueError(f"unknown include block(s): {', '.join(sorted(unknown))}")
-    if "rulers" in include_blocks and "houses" not in include_blocks:
-        raise ValueError('include block "rulers" requires "houses"')
-    if "strength" in include_blocks and "houses" not in include_blocks:
-        raise ValueError('include block "strength" requires "houses"')
-    return include_blocks
+def _normalize_include(chart_kind: ChartKind, include: AbstractSet[str] | None) -> frozenset[str]:
+    return frozenset(normalize_domain_include(chart_kind, include))
 
 
 def _validate_chart_kind_include(chart_kind: ChartKind, include_blocks: frozenset[str]) -> None:
@@ -721,7 +707,7 @@ def _add_derived_points(
             zodiac=zodiac_position(longitude),
             retflags=true_node.retflags,
         )
-        LOGGER.debug("derived_point name=%s longitude=%.6f house=%s", "south_node", longitude, bodies["south_node"].house)
+        LOGGER.debug("derived_point name=%s house=%s", "south_node", bodies["south_node"].house)
 
     if {"sun", "moon"}.issubset(bodies) and "asc" in angles and "pars_fortune" not in bodies:
         from exact_orb.engine.ephemeris.points import part_of_fortune
@@ -734,9 +720,8 @@ def _add_derived_points(
         )
         bodies["pars_fortune"] = _derived_point("pars_fortune", longitude, cusps)
         LOGGER.debug(
-            "derived_point name=%s longitude=%.6f house=%s",
+            "derived_point name=%s house=%s",
             "pars_fortune",
-            bodies["pars_fortune"].longitude,
             bodies["pars_fortune"].house,
         )
 
@@ -753,10 +738,9 @@ def _add_derived_points(
             }
         )
         LOGGER.debug(
-            "derived_point name=%s method=%s longitude=%.6f house=%s",
+            "derived_point name=%s method=%s house=%s",
             "selena",
             selena_method_name,
-            bodies["selena"].longitude,
             bodies["selena"].house,
         )
 

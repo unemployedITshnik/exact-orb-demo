@@ -1,0 +1,208 @@
+@startuml
+title exact-orb — A-4: параллельный промах по одному ключу (single-flight)
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "Handler / run_A" as A
+    control "Handler / run_B" as B
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+
+note over A, B
+Один и тот же ключ у разных операций —
+это норма, а не край: демо-карта, общая
+ссылка, двойной клик, refresh страницы.
+
+**Handler'ы про single-flight не знают.**
+Оба вызывают обычный ensure_chart
+и получают ChartArtifact. Дедупликация —
+внутреннее устройство резолвера,
+а не контракт: снаружи два вызова
+неразличимы.
+end note
+
+
+== Лидер ==
+
+A -> Artifacts : ensure_chart(spec, resolved, run_A)
+activate Artifacts
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(_calculate_and_store()),\nleader_run_id = run_A,\nstarted_at)
+
+note right of Artifacts
+inflight — обычный словарь в поле
+резолвера. Никакого внешнего менеджера
+нет: single-flight целиком принадлежит
+ChartArtifactResolver.
+
+Task, а не Future с ручным set_result:
+расчёт становится самостоятельной
+задачей, не принадлежащей ни одному
+из ожидающих. Семантика отмены тогда
+выражена конструкцией языка, а не
+дисциплиной при написании кода.
+
+leader_run_id нужен присоединившимся
+для журнала, и взять его больше неоткуда.
+end note
+
+Artifacts -> Artifacts : журнал: calculation_started(run_A)
+
+Artifacts -> Engine : calculate(spec, resolved, run_A)
+activate Engine
+
+
+== Присоединившийся ==
+
+B -> Artifacts : ensure_chart(spec, resolved, run_B)
+activate Artifacts
+
+Artifacts -> Artifacts : key тот же\n→ inflight[key] найден
+
+Artifacts -> Artifacts : журнал: singleflight_join(\nrun_id = run_B,\nleader_run_id = inflight[key].leader_run_id)
+
+note right of Artifacts
+Оба идентификатора обязательны.
+Иначе при разборе непонятно, почему
+у операции run_B нет собственного
+calculation_started (§5.6).
+end note
+
+Artifacts -> Artifacts : await shield(inflight[key].task)
+
+note right of Artifacts
+await — приостановка корутины run_B
+до появления результата. Поток
+не блокируется: управление уходит
+в event loop, который тем временем
+обслуживает других пользователей.
+
+shield — отмена корутины run_B отменит
+только это ожидание, но не задачу
+и не работу в executor.
+
+Лидер ждёт ТАК ЖЕ, через shield: иначе
+уход лидера убил бы расчёт для тех,
+кто к нему присоединился.
+
+Вызов B из шага 7 всё это время
+не завершён — он ждёт внутри резолвера.
+end note
+
+note over Artifacts, Engine
+Движок НЕ вызывается второй раз.
+Без этого пять параллельных промахов
+дали бы пять расчётов, выстроенных
+в очередь на process-wide RLock:
+80 мс превратились бы в 80 мс × 5
+при одном и том же результате.
+end note
+
+
+== Завершение ==
+
+Engine --> Artifacts : CalculationResult
+deactivate Engine
+
+Artifacts -> Artifacts : ChartArtifact(key, version, ...)
+Artifacts -> Cache : put(key, bytes)
+
+Artifacts -> Artifacts : task завершился: result\nfinally внутри task: inflight.pop(key)
+
+note right of Artifacts
+Задача завершается результатом или
+исключением — вручную ничего
+не проставляется.
+
+pop стоит в finally ВНУТРИ задачи:
+расчёт окончен, следующий промах
+по этому ключу должен стать новым
+лидером, а не подписаться
+на завершённую задачу. Оставшаяся
+запись превратилась бы в негативное
+кэширование (§3.3.5).
+
+Задача обязана забрать своё исключение
+через add_done_callback: иначе, если
+все ожидающие ушли, Python напишет
+«Task exception was never retrieved»
+в чужом формате и в чужое время
+(§3.3.6).
+end note
+
+Artifacts --> A : ChartArtifact
+deactivate Artifacts
+Artifacts --> B : тот же ChartArtifact
+deactivate Artifacts
+
+
+== Ветки, которые легко потерять ==
+
+note over A, Engine
+**Отказ.** Исключение задачи получают
+ВСЕ ожидающие, словарь вычищается
+в finally; следующий вызов снова идёт
+в движок (§5.3).
+
+**Отмена.** Уход любого ожидающего,
+включая лидера, не отменяет задачу —
+это гарантирует shield. Ушли все —
+задача всё равно доводится до конца
+и результат попадает в кэш: слот RLock
+уже оплачен, выбрасывать работу незачем.
+Отмена и так не прервала бы поток —
+Python не умеет отменять CPU-bound
+задачу в пуле (§3.4.4).
+
+**Разные ключи.** Вызовы по разным ключам
+резолвером между собой не сериализуются;
+очередь возникает только в executor.
+
+**Несколько инстансов.** Словарь inflight
+process-local. Худший случай — N расчётов
+вместо одного: потеря эффективности,
+не ошибка (§9.6).
+end note
+
+@enduml

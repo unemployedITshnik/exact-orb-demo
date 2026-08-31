@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from exact_orb import swiss_backend
+from exact_orb.domain import RulershipScheme
 
 
 ZODIAC_SIGNS: tuple[str, ...] = (
@@ -100,14 +100,6 @@ ANGLE_INDICES: tuple[tuple[str, int], ...] = (
 SECONDS_PER_SIGN = 30 * 60 * 60
 FULL_CIRCLE = 360.0
 EPSILON = 1e-10
-
-
-class RulershipScheme(str, Enum):
-    """Available deterministic sign ruler tables."""
-
-    COMBINED = "combined"
-    MODERN = "modern"
-    TRADITIONAL = "traditional"
 
 
 class ZodiacPosition(BaseModel):

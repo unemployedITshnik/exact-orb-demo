@@ -99,8 +99,8 @@ OrchB --> FE : Success(chart_B, profile_version = 6)
 
 == A заканчивается позже ==
 
-HandlerA -> Artifacts : ensure_chart(spec_A, resolved_A)
-Artifacts -> Cache : put(key_A, artifact_A)
+HandlerA -> Artifacts : ensure_chart(spec_A, resolved_A, run_A)
+Artifacts -> Cache : put(key_A, bytes_A)
 Artifacts --> HandlerA : ChartArtifact
 
 HandlerA --> OrchA : BuildNatalSuccess(artifact_A,\ndelta{expected_version = 5})

@@ -1,0 +1,148 @@
+@startuml
+title exact-orb — A-6: ensure_derived, композит из базовых артефактов
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "BuildSynastryHandler" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    control "calculation_key" as Keys
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+end box
+
+
+note over Handler, Engine
+Производные карты строятся композицией,
+а не рекурсией: транзит и соляр идут
+тем же путём, отличаясь только числом
+и составом базовых артефактов.
+end note
+
+
+== 1. База A — субъект сессии ==
+
+Handler -> Artifacts : ensure_chart(spec_A, resolved_A, run)
+Artifacts -> Cache : get(key_A)
+Cache --> Artifacts : bytes — попадание
+Artifacts --> Handler : ChartArtifact A
+
+note right of Cache
+Натал субъекта почти всегда уже в кэше:
+его считали, когда строили base chart
+сессии. Реальный расчёт здесь один — B.
+end note
+
+
+== 2. База B — партнёр ==
+
+Handler -> Artifacts : ensure_chart(spec_B, resolved_B, run)
+Artifacts -> Cache : get(key_B)
+Cache --> Artifacts : None — промах
+Artifacts -> Engine : calculate(spec_B, resolved_B, run)
+Engine --> Artifacts : CalculationResult
+Artifacts -> Cache : put(key_B, bytes)
+Artifacts --> Handler : ChartArtifact B
+
+note over Handler, Artifacts
+Второй субъект резолвится отдельно,
+и его InputRequired обязан нести,
+О КОМ из двоих идёт речь, — иначе UI
+не подсветит нужное поле.
+
+Это требование к типу исхода, а не
+к резолверу артефактов.
+end note
+
+
+== 3. Композит ==
+
+Handler -> Artifacts : ensure_derived(\nspec = SynastrySpec(...),\nbases = (A, B),\nrun)
+activate Artifacts
+
+Artifacts -> Keys : calculation_key_from_bases(\n(key_A, key_B), spec, CALCULATION_VERSION)
+Keys --> Artifacts : derived_key
+
+note right of Keys
+Ключ композита выводится из ключей
+частей. Части уже несут и данные
+рождения, и CALCULATION_VERSION,
+поэтому свойство «изменился любой вход
+→ изменился ключ» сохраняется без
+повторного включения ResolvedBirthData.
+
+Порядок bases ЗНАЧИМ и не сортируется:
+планеты A в домах B — не то же,
+что B в домах A (§4).
+end note
+
+Artifacts -> Cache : get(derived_key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Engine : calculate_derived(spec, bases, run)
+Engine --> Artifacts : CalculationResult\n(кросс-аспекты, наложение домов)
+
+note right of Engine
+Кросс-аспекты — арифметика по долготам
+двух готовых наборов позиций, без
+обращения к Swiss Ephemeris.
+
+Стоимость синастрии ≈ один натал
+плюс копейки, а не два натала.
+end note
+
+Artifacts -> Cache : put(derived_key, bytes)
+Artifacts --> Handler : ChartArtifact (синастрия)
+deactivate Artifacts
+
+
+== Что здесь не происходит ==
+
+note over Artifacts, Engine
+Резолвер НЕ достаёт базы сам: рекурсии
+внутри ensure_* нет. Вложенный
+run_in_executor из задачи, ожидающей
+слот того же пула, — классический
+deadlock при ограниченном max_workers.
+
+bases принимаются только как ChartArtifact.
+Сфабриковать базу мимо резолвера нельзя,
+поэтому инвариант «один deterministic path»
+держится системой типов, а не соглашением.
+end note
+
+@enduml

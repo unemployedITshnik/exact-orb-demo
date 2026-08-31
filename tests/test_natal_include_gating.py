@@ -175,17 +175,28 @@ def test_cosmogram_chart_kind_rejects_houses() -> None:
             REFERENCE["longitude"],
             chart_kind="cosmogram",
             house_system=REFERENCE["house_system"],
-        )
-
-    with pytest.raises(ValueError, match=r"(?=.*chart_kind)(?=.*houses)"):
-        calculate_natal(
-            REFERENCE["datetime_utc"],
-            REFERENCE["latitude"],
-            REFERENCE["longitude"],
-            chart_kind="cosmogram",
-            house_system=REFERENCE["house_system"],
             include={"positions", "houses"},
         )
+
+
+def test_cosmogram_default_include_omits_house_dependent_blocks() -> None:
+    chart = calculate_natal(
+        REFERENCE["datetime_utc"],
+        REFERENCE["latitude"],
+        REFERENCE["longitude"],
+        chart_kind="cosmogram",
+        house_system=REFERENCE["house_system"],
+    )
+
+    assert chart.chart_kind == "cosmogram"
+    assert chart.bodies is not None
+    assert chart.cusps is None
+    assert chart.angles is None
+    assert chart.house_rulers is None
+    assert chart.interceptions is None
+    assert chart.strength is None
+    assert chart.aspects is not None
+    assert chart.configurations is not None
 
 
 def test_positions_only_works_beyond_polar_circle() -> None:

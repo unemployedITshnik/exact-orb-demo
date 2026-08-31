@@ -1,0 +1,160 @@
+@startuml
+title exact-orb — A-3: промах и отказ расчёта, два класса отказа
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+box "APPLICATION" #FFEDD5
+    control "Application caller" as Handler
+end box
+
+box "АРТЕФАКТЫ" #E8F5E9
+    control "ChartArtifactResolver" as Artifacts
+    database "CalculationCache" as Cache
+end box
+
+box "РАСЧЁТ" #FFFFF0
+    control "EngineService" as Engine
+    entity "calculate_natal\n+ Swiss Ephemeris" as Swiss
+end box
+
+
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
+activate Artifacts
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(...))
+
+Artifacts -> Engine : calculate(spec, resolved, run)
+activate Engine
+
+note over Artifacts, Engine
+Три ветви ниже — **взаимоисключающие**:
+в одном исполнении происходит ровно одна,
+после чего управление уходит в эпилог.
+
+Это не последовательность попыток
+и не каскад: расчёт после отказа
+не продолжается.
+end note
+
+
+alt SPEC_INVALID / GEOGRAPHY_INVALID — до лока
+
+    Engine -> Engine : предпроверка не прошла
+    Engine --> Artifacts : ChartCalculationError(SPEC_INVALID)
+
+    note right of Engine
+    Расчётный слот не занят, поток
+    не израсходован: проверка стоит
+    до run_in_executor (§2.3).
+    end note
+
+else HOUSES_DEGENERATE — отказ ядра
+
+    Engine -> Swiss : with ephemeris_session():\ncalculate_natal(...)
+    Swiss --> Engine : ValueError\n(Placidus вырождается на широте)
+    Engine --> Artifacts : ChartCalculationError(HOUSES_DEGENERATE)
+
+    note right of Swiss
+    Голое ValueError наружу не выходит:
+    вызывающий не должен разбирать
+    текст сообщения.
+    end note
+
+else EPHEMERIS_UNAVAILABLE — отказ зависимости
+
+    Engine -> Swiss : with ephemeris_session():\ncalculate_natal(...)
+    Swiss --> Engine : ValueError\n(каталог ephe недоступен)
+    Engine --> Artifacts : CalculationUnavailableError(\nEPHEMERIS_UNAVAILABLE)
+
+    note right of Swiss
+    Другой класс отказа: чинит дежурный,
+    а не пользователь. Обязателен алерт.
+
+    В норме сюда не попасть — без каталога
+    не вычислится CALCULATION_VERSION
+    и приложение не поднимется. Отказ
+    в рантайме означает, что каталог
+    пропал ПОСЛЕ старта (§5.3).
+    end note
+end
+
+deactivate Engine
+
+
+== Эпилог: одинаков для любой из трёх ветвей ==
+
+Artifacts -> Artifacts : журнал: calculation_failed(\nrun_id, code, класс, duration_ms)
+
+Artifacts -> Artifacts : task завершился исключением\nfinally внутри task: inflight.pop(key)
+
+note right of Artifacts
+Запись вычищается ВСЕГДА. Отравленная
+запись, оставшаяся в словаре, превратилась
+бы в негативное кэширование — которое
+решено не вводить (§3.3.5).
+
+Исключение получают все, кто ждал
+задачу. Если не ждал никто, его вычитает
+add_done_callback — иначе Python напишет
+«Task exception was never retrieved»
+в чужом формате (§3.3.6).
+end note
+
+Artifacts -x Cache : put НЕ выполняется
+
+note over Artifacts, Cache
+Ошибки не кэшируются — решение принято.
+
+Следствие: детерминированный отказ
+воспроизводится при каждом запросе.
+Защита — предпроверка (§2.3) и учёт
+промахов в rate limit (§8.3),
+а не негативный кэш.
+end note
+
+Artifacts --> Handler : исключение
+deactivate Artifacts
+
+Handler -> Handler : базовый handler:\nкласс исключения → класс исхода
+
+note over Handler
+ChartCalculationError       → CalculationFailed
+CalculationUnavailableError → ResolutionUnavailable(retryable = true)
+
+Отображение по классу, без разбора полей.
+retryable отдельным полем не хранится:
+он однозначно определяется классом (§6.2).
+end note
+
+@enduml

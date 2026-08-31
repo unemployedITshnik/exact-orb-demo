@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -28,6 +28,17 @@ from tests.fixtures.natal_1985 import REFERENCE
 
 TIMEOUT_SECONDS = 3.0
 THREAD_COUNT = 8
+
+
+@pytest.fixture(autouse=True)
+def capture_config_logs_after_cli_logging_tests() -> Iterator[None]:
+    package_logger = logging.getLogger("exact_orb")
+    old_propagate = package_logger.propagate
+    package_logger.propagate = True
+    try:
+        yield
+    finally:
+        package_logger.propagate = old_propagate
 
 
 class SpySwe:

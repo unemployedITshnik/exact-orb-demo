@@ -136,6 +136,8 @@ src/exact_orb/
         version.py              CalculationVersion
         keys.py                 CalculationInput, calculation_key
         cache.py                CalculationCache, InMemoryCalculationCache
+        codec.py                ChartArtifact byte codec
+        errors.py               ArtifactError, ChartCalculationError, CalculationUnavailableError
         engine.py               CalculationEnginePort, EngineService
         artifacts.py            ChartArtifactResolver
 
@@ -305,21 +307,19 @@ eviction кэша (ADR-0017, И-12). Хранится в сессии, ключ 
 NatalChartSpec {
     technique:                    Literal["natal"]
     chart_kind:                   Literal["natal", "cosmogram"]
+    include:                      tuple[str, ...]
     house_system:                 str          "P"
     rulership:                    str          "combined"
-    include:                      tuple[str, ...]
-    selena_method:                str
     near_interception_threshold:  float
-    orb_profile:                  str          "default"
 }
 
 ChartSpec = NatalChartSpec
 ```
 
-Union из одного члена заведён сразу: ADR-0017 требует, чтобы транзитная спека
-несла момент и место транзита, которых нет в профиле. Появление
-`TransitChartSpec` не должно менять сигнатуры `calculation_key`,
-`ensure_chart` и поле `ChartRef.spec`.
+Tagged union не вводится, пока у union нет второго члена: сохранённые спеки
+уже несут `technique`, а `ChartSpec = NatalChartSpec` валидируется без явной
+передачи тега. `TransitChartSpec` добавит union тогда, когда появится сама
+транзитная спека.
 
 **`include` по `chart_kind`** (проверяется движком, см. `_validate_chart_kind_include`):
 
@@ -338,10 +338,11 @@ cosmogram  → {positions, aspects, configurations}
 развёрнутые настройки. Если конфиги должны быть переопределяемы
 пользователем — они обязаны лежать в спеке целиком, и это меняет решение.
 
-**Чего в спеке нет.** `ephemeris_flags` и `body_ids` зафиксированы кодом
-и покрыты `CalculationVersion`; `ephemeris_path` — runtime-конфигурация,
-а содержимое файлов входит в `CalculationVersion` отпечатком.
-При появлении выбора любой из них переезжает в спеку.
+**Чего в спеке нет.** `selena_method`, `orb_profile`, `ephemeris_flags`
+и `body_ids` зафиксированы кодом или процессной конфигурацией и должны быть
+покрыты `CalculationVersion`; `ephemeris_path` — runtime-конфигурация,
+а содержимое файлов входит в `CalculationVersion` отпечатком. При появлении
+выбора любой из этих величин переезжает в спеку.
 
 ---
 
@@ -463,8 +464,18 @@ CALCULATION_VERSION: str        вычисляется один раз при с
 1. версия расчётного кода — явная константа `ENGINE_VERSION` в
    `engine/__init__.py`, поднимаемая при изменении алгоритма или дефолтных
    конфигов;
-2. `swisseph.version`;
-3. sha256 содержимого всех `*.se1` в каталоге эфемерид, имена отсортированы.
+2. версия содержимого профилей, влияющих на числа расчёта:
+   orb/aspect/configuration/strength;
+3. `swisseph.version`;
+4. имя и версия установленного дистрибутива, который предоставляет модуль
+   `swisseph`;
+5. sha256 нативного модуля `swisseph`, если путь к файлу доступен;
+6. sha256 содержимого всех `*.se1` в каталоге эфемерид, имена отсортированы.
+
+Если модуль `swisseph` невозможно однозначно сопоставить с установленным
+дистрибутивом или найдено несколько дистрибутивов, претендующих на этот
+модуль, приложение не стартует. Это ошибка окружения, а не runtime-выбор
+«первого подходящего» биндинга.
 
 **Чего не делает.** Не включает версию `tzdata`: она влияет на `utc_datetime`
 внутри `ResolvedBirthData`, который уже входит в ключ (ADR-0017).
@@ -554,25 +565,37 @@ GeoNames переименовал «Москва» → «Moscow» при пер�
 
 ```text
 class CalculationCache(Protocol):
-    async def get(self, key: str) -> ChartArtifact | None: ...
-    async def put(self, key: str, artifact: ChartArtifact) -> None: ...
+    async def get(self, key: str) -> bytes | None: ...
+    async def put(self, key: str, payload: bytes) -> None: ...
 
-class InMemoryCalculationCache(CalculationCache):
-    def __init__(self, *, max_entries: int, ttl_seconds: int | None) -> None: ...
+class InMemoryCalculationCache:
+    def __init__(
+        self,
+        *,
+        max_entries: int,
+        ttl_seconds: float | None,
+        clock: Callable[[], float] | None = None,
+    ) -> None: ...
 ```
 
 Именно `get` / `put`, а не `save` / `load` — семантика удаляемости должна быть
 видна в коде (ADR-0017).
 
-**Ответственности.** Хранение, вытеснение, TTL. TTL кэша расчётов **не обязан**
-превосходить TTL сессии: промах восстановим.
+**Ответственности.** Хранение opaque bytes, вытеснение, TTL. Формат payload
+принадлежит artifact-слою: `calculation/codec.py` кодирует `ChartArtifact` как
+gzip-6 от UTF-8 JSON и выполняет обратную валидацию на чтение. TTL кэша расчётов
+**не обязан** превосходить TTL сессии: промах восстановим.
+
+`cache_timeout_ms` — параметр будущего Redis-адаптера или `CacheSettings`.
+Для in-memory реализации это no-op и не входит в конструктор.
 
 **Чего не делает.** Не знает, чей это результат; не участвует в решении
 об актуальности; не является пользовательским состоянием — даже устаревший
-для конкретной сессии, но корректный артефакт класть в кэш можно.
+для конкретной сессии, но корректный payload артефакта класть в кэш можно.
 
 **Тесты.** Промах на пустом кэше; попадание после `put`; вытеснение по
-`max_entries`; истечение TTL; полная очистка не ломает последующий расчёт.
+`max_entries`; истечение TTL; полная очистка не ломает последующий расчёт;
+кэш не импортирует `ChartArtifact`.
 
 ---
 
@@ -584,15 +607,29 @@ class InMemoryCalculationCache(CalculationCache):
 **Контракт.**
 
 ```text
+CalculationResult {
+    chart_kind: Literal["natal", "cosmogram"]
+    chart:      NatalChart
+    warnings:   tuple[CalculationWarning, ...]
+}
+
 class CalculationEnginePort(Protocol):
     async def calculate(
         self,
         spec:     ChartSpec,
         resolved: ResolvedBirthData,
-    ) -> ChartArtifact: ...
+        *,
+        run:      RunContext,
+    ) -> CalculationResult: ...
 
 class EngineService(CalculationEnginePort):
-    def __init__(self, *, executor: ThreadPoolExecutor) -> None: ...
+    def __init__(
+        self,
+        *,
+        executor: ThreadPoolExecutor,
+        techniques: Mapping[str, TechniqueAdapter],
+        slow_threshold_ms: float,
+    ) -> None: ...
 ```
 
 **Ответственности.**
@@ -606,10 +643,13 @@ chart_kind                   ← spec.chart_kind
 house_system                 ← spec.house_system
 rulership                    ← spec.rulership
 include                      ← set(spec.include)
-selena_method                ← spec.selena_method
 near_interception_threshold  ← spec.near_interception_threshold
-aspect/configuration/strength config ← orb_profile
 ```
+
+Текущий `ChartSpec` ещё не содержит `selena_method` и `orb_profile`, поэтому
+полный mapping §10 `chart_artifacts.md` выполняется только для уже
+spec-owned полей. Остальные параметры остаются известным долгом до появления
+`CalculationVersion` и расширения спеки.
 
 2. Исполнение вне event loop:
 
@@ -617,8 +657,7 @@ aspect/configuration/strength config ← orb_profile
 await loop.run_in_executor(executor, _calculate_sync, ...)
 
 def _calculate_sync(...):
-    with ephemeris_session():
-        return calculate_natal(...)
+    return adapter.calculate(...)
 ```
 
 `ephemeris_session()` — process-wide `threading.RLock`. Захват из корутины
@@ -631,19 +670,28 @@ def _calculate_sync(...):
 ровно там, где он нужнее всего — при разборе медленного или упавшего
 расчёта. Поэтому `run_id` передаётся явным аргументом, а не через контекст.
 
-3. Упаковка в `ChartArtifact` с поднятием `chart_kind` и `warnings` наверх.
+3. Возврат `CalculationResult`, а не `ChartArtifact`. Движок не знает
+   `calculation_key` и `calculation_version`; эти поля добавляет
+   `ChartArtifactResolver`.
 
-4. Приведение `ValueError` движка к `CalculationFailed` с кодом. Пример
-из кода: Placidus вырождается на высоких широтах и `calculate_houses`
-поднимает `ValueError` — это `CalculationFailed`, а не `InputRequired`.
+4. Проверка инварианта результата:
+   `result.chart_kind == spec.chart_kind` и
+   `result.chart.chart_kind == spec.chart_kind`. Несовпадение — дефект
+   адаптера, оно приводится к `ChartCalculationError(ENGINE_UNEXPECTED)`
+   и не попадает в кэш.
+
+5. Приведение `ValueError` движка к `ChartCalculationError` с кодом. Пример
+   из кода: Placidus вырождается на высоких широтах и `calculate_houses`
+   поднимает `ValueError` — это `ChartCalculationError(HOUSES_DEGENERATE)`,
+   а не `InputRequired`.
 
 **Чего не делает.** Не обращается к кэшу; не знает про сессию; не строит
-ключ; не решает, нужен ли расчёт вообще.
+ключ; не собирает `ChartArtifact`; не решает, нужен ли расчёт вообще.
 
-**Тесты.** Полный маппинг спеки — каждый параметр `calculate_natal()` получает
-значение из спеки, а не дефолт; космограмма получает суженный `include`;
+**Тесты.** Маппинг всех текущих полей спеки; космограмма получает суженный `include`;
 расчёт не выполняется в event loop (проверка по идентификатору потока);
-вырожденный Placidus даёт `CalculationFailed`.
+вырожденный Placidus даёт `ChartCalculationError(HOUSES_DEGENERATE)`;
+адаптер возвращает `CalculationResult`, а не `ChartArtifact`.
 
 ---
 
@@ -669,18 +717,28 @@ class ChartArtifactResolver:
         self,
         spec:     ChartSpec,
         resolved: ResolvedBirthData,
+        *,
+        run:      RunContext,
     ) -> ChartArtifact: ...
 ```
 
-Тело — около сорока строк:
+Скелет без веток отказов, stale/corrupt и single-flight:
 
 ```text
 key = calculation_key(calculation_input_from(resolved), spec, self.version)
-hit = await self.cache.get(key)
-if hit is not None:
-    return hit
-artifact = await self.engine.calculate(spec, resolved)
-await self.cache.put(key, artifact)
+payload = await self.cache.get(key)
+if payload is not None:
+    return decode_chart_artifact(payload)
+result = await self.engine.calculate(spec, resolved, run=run)
+artifact = ChartArtifact(
+    calculation_key=key,
+    calculation_version=self.version,
+    spec=spec,
+    chart_kind=result.chart_kind,
+    chart=result.chart,
+    warnings=result.warnings,
+)
+await self.cache.put(key, encode_chart_artifact(artifact))
 return artifact
 ```
 
@@ -689,7 +747,8 @@ return artifact
 
 **Тесты.** Промах вызывает движок ровно один раз; попадание не вызывает его
 вовсе; смена `CALCULATION_VERSION` даёт промах на тех же данных; два вызова
-с одинаковыми аргументами возвращают равные артефакты.
+с одинаковыми аргументами возвращают равные артефакты; нечитаемые байты
+отбрасываются как corrupt cache и ведут к новому расчёту.
 
 ---
 
@@ -1205,7 +1264,7 @@ include = {"positions", "aspects", "configurations"}
 `дата + место → cosmogram`. Вопрос о времени не задаётся, пустое поле —
 это явное `time_unknown`, а не пробел, требующий уточнения.
 
-3. `artifacts.ensure_chart(spec, resolved)`.
+3. `artifacts.ensure_chart(spec, resolved, run)`.
 
 4. `ProfileService.commit_base_chart(...)` → `ContextDelta`.
 
@@ -1353,7 +1412,11 @@ def build_application(settings) -> ApplicationOrchestrator:
     version   = compute_calculation_version(settings.ephemeris_path)
     cache     = InMemoryCalculationCache(...)
     executor  = ThreadPoolExecutor(max_workers=settings.calc_workers)
-    engine    = EngineService(executor=executor)
+    engine    = EngineService(
+        executor=executor,
+        techniques={"natal": NatalTechniqueAdapter()},
+        slow_threshold_ms=settings.calc_slow_threshold_ms,
+    )
     artifacts = ChartArtifactResolver(cache=cache, engine=engine, version=version)
     places    = LocalPlaceCatalog.from_file(settings.place_catalog_path)
     resolver  = BirthDataResolver(places=places)

@@ -118,13 +118,13 @@ time_unknown, а не пробел,
 требующий уточнения.
 end note
 
-Handler -> Artifacts : ensure_chart(spec, resolved)
+Handler -> Artifacts : ensure_chart(spec, resolved, run)
 activate Artifacts
 
 Artifacts -> Cache : get(key)
 Cache --> Artifacts : None — промах
 
-Artifacts -> Engine : calculate(spec, resolved)
+Artifacts -> Engine : calculate(spec, resolved, run)
 Engine -> Swiss : calculate_natal(\nchart_kind = "cosmogram", ...)
 
 Swiss -> Swiss : проверка суточной\nнеоднозначности
@@ -141,9 +141,10 @@ note right of Swiss
 end note
 
 Swiss --> Engine : NatalChart\n(chart_kind = "cosmogram",\ncusps = None, angles = None,\nwarnings = [moon_sign_change])
-Engine --> Artifacts : ChartArtifact
+Engine --> Artifacts : CalculationResult
 
-Artifacts -> Cache : put(key, artifact)
+Artifacts -> Artifacts : ChartArtifact(key, version, result)
+Artifacts -> Cache : put(key, bytes)
 Artifacts --> Handler : ChartArtifact\n(chart_kind поднят наверх)
 deactivate Artifacts
 
