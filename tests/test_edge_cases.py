@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from exact_orb.engine.charts import natal as natal_module
 from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.calc import (
     house_for_longitude,
@@ -28,6 +29,33 @@ def test_high_latitude_placidus_raises_clear_error() -> None:
             house_system="P",
             body_ids={"sun": BODY_IDS["sun"]},
         )
+
+
+@pytest.mark.parametrize("house_system", ("K", "Z", "?"))
+def test_unsupported_natal_house_system_is_rejected_before_house_calculation(
+    house_system: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    house_calls = 0
+
+    def unexpected_house_calculation(*args: object, **kwargs: object) -> None:
+        nonlocal house_calls
+        house_calls += 1
+        raise AssertionError("calculate_houses must not be called")
+
+    monkeypatch.setattr(natal_module, "calculate_houses", unexpected_house_calculation)
+
+    with pytest.raises(ValueError, match="Placidus"):
+        calculate_natal(
+            REFERENCE["datetime_utc"],
+            REFERENCE["latitude"],
+            REFERENCE["longitude"],
+            chart_kind="natal",
+            house_system=house_system,
+            body_ids={"sun": BODY_IDS["sun"]},
+        )
+
+    assert house_calls == 0
 
 
 def test_planet_exactly_on_cusp_uses_next_house() -> None:

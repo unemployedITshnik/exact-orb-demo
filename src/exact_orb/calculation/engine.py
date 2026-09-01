@@ -28,8 +28,8 @@ from exact_orb.calculation.spec import ChartSpec
 from exact_orb.domain import (
     ChartKind,
     RulershipScheme,
-    normalize_house_system_code,
     normalize_include,
+    normalize_natal_house_system_code,
     validate_geography,
 )
 from exact_orb.engine.charts.natal import NatalChart, calculate_natal
@@ -98,7 +98,7 @@ class NatalTechniqueAdapter:
             resolved.latitude,
             resolved.longitude,
             chart_kind=spec.chart_kind,
-            house_system=normalize_house_system_code(spec.house_system),
+            house_system=normalize_natal_house_system_code(spec.house_system),
             rulership=spec.rulership,
             include=frozenset(spec.include),
             near_interception_threshold=spec.near_interception_threshold,
@@ -259,7 +259,7 @@ def _prevalidate(spec: ChartSpec, resolved: ResolvedBirthData, run_id: str) -> N
         if include is None:
             raise ValueError("include must not be None")
         normalize_include(spec.chart_kind, include)
-        normalize_house_system_code(spec.house_system)
+        normalize_natal_house_system_code(spec.house_system)
         RulershipScheme(spec.rulership)
         threshold = float(spec.near_interception_threshold)
         if not isfinite(threshold) or threshold < 0.0:

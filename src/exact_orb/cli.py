@@ -380,7 +380,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lat", type=float, default=55.7522, help="latitude, north positive")
     parser.add_argument("--lon", type=float, default=37.6155, help="longitude, east positive")
     parser.add_argument("--place", default="Москва", help="place name for human output")
-    parser.add_argument("--house-system", default=DEFAULT_HOUSE_SYSTEM, help="one-letter Swiss Ephemeris house code")
+    parser.add_argument(
+        "--house-system",
+        default=DEFAULT_HOUSE_SYSTEM,
+        help="natal house system; currently only P (Placidus)",
+    )
     parser.add_argument("--ephe-path", default=None, help="Swiss Ephemeris files directory")
     parser.add_argument(
         "--rulership",

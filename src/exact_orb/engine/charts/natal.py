@@ -17,6 +17,7 @@ from exact_orb.domain import (
     INCLUDE_BLOCKS,
     RulershipScheme,
     normalize_include as normalize_domain_include,
+    normalize_natal_house_system_code,
 )
 from exact_orb.engine.aspects import Aspect, AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.configurations import Configuration, ConfigurationConfig, find_configurations
@@ -26,7 +27,6 @@ from exact_orb.engine.ephemeris.calc import (
     house_for_longitude,
     julian_day_ut as ephemeris_jd_ut,
     normalize_degrees,
-    normalize_house_system,
     rulers_for_sign,
     to_utc,
     validate_geography,
@@ -192,6 +192,7 @@ def _calculate_natal(
     )
     include_blocks = _normalize_include(chart_kind, include)
     _validate_chart_kind_include(chart_kind, include_blocks)
+    hsys = normalize_natal_house_system_code(house_system).encode("ascii")
     houses_included = "houses" in include_blocks
     ephemeris = validate_ephemeris_path(ephemeris_path)
     swiss_backend.swe.set_ephe_path(ephemeris.path)
@@ -205,7 +206,6 @@ def _calculate_natal(
     validate_geography(latitude, longitude)
     if near_interception_threshold < 0.0:
         raise ValueError("near_interception_threshold must be non-negative")
-    hsys = normalize_house_system(house_system)
     scheme = RulershipScheme(rulership)
     utc_datetime = to_utc(birth_datetime)
     julian_day_ut = ephemeris_jd_ut(utc_datetime)
