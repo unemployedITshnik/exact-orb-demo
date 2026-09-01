@@ -18,12 +18,14 @@ from asyncio import tasks as asyncio_tasks
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
+from math import isfinite
 import time
 from typing import Literal
 
 from pydantic import ValidationError
 
 from exact_orb.birth.types import ResolvedBirthData
+from exact_orb.domain import validate_geography
 from exact_orb.run_context import RunContext
 
 from .cache import CalculationCache
@@ -77,8 +79,13 @@ class ChartArtifactResolver:
     ) -> None:
         if not version:
             raise ValueError("version must be non-empty")
-        if degraded_log_interval_s <= 0:
-            raise ValueError("degraded_log_interval_s must be positive")
+        if (
+            isinstance(degraded_log_interval_s, bool)
+            or not isinstance(degraded_log_interval_s, (int, float))
+            or not isfinite(degraded_log_interval_s)
+            or degraded_log_interval_s <= 0
+        ):
+            raise ValueError("degraded_log_interval_s must be a finite positive number")
 
         self.cache = cache
         self.engine = engine
@@ -113,6 +120,12 @@ class ChartArtifactResolver:
         *,
         run: RunContext,
     ) -> ChartArtifact:
+        run_id = str(run.run_id)
+        try:
+            validate_geography(resolved.latitude, resolved.longitude)
+        except (TypeError, ValueError):
+            raise ChartCalculationError("GEOGRAPHY_INVALID", run_id=run_id) from None
+
         calc_input = calculation_input_from(resolved)
         key = calculation_key(calc_input, spec, self.version)
         return await self._ensure_singleflight(key, spec, resolved, run)

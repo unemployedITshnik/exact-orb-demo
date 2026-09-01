@@ -39,7 +39,7 @@ FULL_KEY_PLACEHOLDER = "eo:calc:v1:" + ("0" * 64)
 SENSITIVE_WARNING = "sensitive warning for 1990-09-02 55.7558 37.6173 Moscow"
 
 
-def test_constructor_validates_settings_and_initial_stats() -> None:
+def test_constructor_validates_version_and_initial_stats() -> None:
     resolver = ChartArtifactResolver(
         cache=FakeCache(),
         engine=FakeEngine(_result()),
@@ -59,12 +59,20 @@ def test_constructor_validates_settings_and_initial_stats() -> None:
             degraded_log_interval_s=60.0,
         )
 
+
+@pytest.mark.parametrize(
+    "degraded_log_interval_s",
+    (0.0, -1.0, float("nan"), float("inf"), float("-inf"), True),
+)
+def test_constructor_rejects_invalid_degraded_log_interval(
+    degraded_log_interval_s: object,
+) -> None:
     with pytest.raises(ValueError, match="degraded_log_interval_s"):
         ChartArtifactResolver(
             cache=FakeCache(),
             engine=FakeEngine(_result()),
             version=VERSION,
-            degraded_log_interval_s=0.0,
+            degraded_log_interval_s=degraded_log_interval_s,  # type: ignore[arg-type]
         )
 
 
@@ -115,6 +123,40 @@ async def test_miss_calculates_stores_and_next_call_hits_equal_artifact() -> Non
     assert resolver.hits == 1
     assert resolver.put_ok == 1
     assert resolver.hit_ratio == 0.5
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    ((91.0, 37.6173), (55.7558, 181.0)),
+)
+async def test_invalid_geography_is_typed_before_key_cache_and_engine(
+    latitude: float,
+    longitude: float,
+) -> None:
+    resolved = ResolvedBirthData(
+        utc_datetime=BASE_UTC,
+        latitude=latitude,
+        longitude=longitude,
+        tz_id="Europe/Moscow",
+        utc_offset_seconds=10800,
+        canonical_place="Moscow",
+        time_unknown=False,
+        warnings=(),
+    )
+    cache = FakeCache()
+    engine = FakeEngine(_result())
+    resolver = _resolver(cache, engine)
+
+    with pytest.raises(ChartCalculationError) as exc_info:
+        await resolver.ensure_chart(_spec(), resolved, run=_run())
+
+    assert exc_info.value.code == "GEOGRAPHY_INVALID"
+    assert exc_info.value.run_id == str(RUN_ID)
+    assert exc_info.value.__cause__ is None
+    assert cache.get_calls == []
+    assert cache.put_calls == []
+    assert engine.calls == 0
+    assert resolver._inflight == {}
 
 
 async def test_mutating_miss_result_does_not_change_later_cache_hit() -> None:

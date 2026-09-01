@@ -143,14 +143,28 @@ async def test_clear_removes_entries_and_cache_remains_usable() -> None:
     assert await cache.get("b") == b"b"
 
 
-def test_invalid_cache_settings_are_rejected() -> None:
-    for max_entries in (0, -1):
-        with pytest.raises(ValueError, match="max_entries"):
-            InMemoryCalculationCache(max_entries=max_entries, ttl_seconds=None)
+@pytest.mark.parametrize(
+    "max_entries",
+    (0, -1, 1.5, float("nan"), float("inf"), float("-inf"), True),
+)
+def test_invalid_max_entries_is_rejected(max_entries: object) -> None:
+    with pytest.raises(ValueError, match="max_entries"):
+        InMemoryCalculationCache(
+            max_entries=max_entries,  # type: ignore[arg-type]
+            ttl_seconds=None,
+        )
 
-    for ttl_seconds in (0.0, -1.0):
-        with pytest.raises(ValueError, match="ttl_seconds"):
-            InMemoryCalculationCache(max_entries=1, ttl_seconds=ttl_seconds)
+
+@pytest.mark.parametrize(
+    "ttl_seconds",
+    (0.0, -1.0, float("nan"), float("inf"), float("-inf"), True),
+)
+def test_invalid_ttl_seconds_is_rejected(ttl_seconds: object) -> None:
+    with pytest.raises(ValueError, match="ttl_seconds"):
+        InMemoryCalculationCache(
+            max_entries=1,
+            ttl_seconds=ttl_seconds,  # type: ignore[arg-type]
+        )
 
 
 def test_protocol_is_runtime_checkable_and_implemented_structurally() -> None:
