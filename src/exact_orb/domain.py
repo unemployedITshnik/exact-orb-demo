@@ -35,6 +35,7 @@ LATITUDE_MAX = 90.0
 LONGITUDE_MIN = -180.0
 LONGITUDE_MAX = 180.0
 COORDINATE_QUANT = Decimal("0.000001")
+SUPPORTED_NATAL_HOUSE_SYSTEM_CODES: frozenset[str] = frozenset({"P"})
 
 
 class RulershipScheme(str, Enum):
@@ -104,6 +105,15 @@ def normalize_house_system_code(house_system: str | bytes) -> str:
     return code.upper()
 
 
+def normalize_natal_house_system_code(house_system: str | bytes) -> str:
+    """Normalize the currently supported natal house-system code."""
+
+    code = normalize_house_system_code(house_system)
+    if code not in SUPPORTED_NATAL_HOUSE_SYSTEM_CODES:
+        raise ValueError("natal house_system must be 'P' (Placidus)")
+    return code
+
+
 def validate_geography(latitude: float, longitude: float) -> None:
     """Validate the broad coordinate contract accepted by the calculation engine."""
 
@@ -171,6 +181,7 @@ __all__ = [
     "LATITUDE_MIN",
     "LONGITUDE_MAX",
     "LONGITUDE_MIN",
+    "SUPPORTED_NATAL_HOUSE_SYSTEM_CODES",
     "ChartKind",
     "IncludeBlock",
     "RulershipScheme",
@@ -178,5 +189,6 @@ __all__ = [
     "normalize_include",
     "normalize_latitude",
     "normalize_longitude",
+    "normalize_natal_house_system_code",
     "validate_geography",
 ]

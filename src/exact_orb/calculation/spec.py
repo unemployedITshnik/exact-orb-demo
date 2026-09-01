@@ -11,8 +11,8 @@ from exact_orb.domain import (
     ChartKind,
     IncludeBlock,
     RulershipScheme,
-    normalize_house_system_code,
     normalize_include,
+    normalize_natal_house_system_code,
 )
 
 
@@ -45,7 +45,7 @@ class NatalChartSpec(BaseModel):
     @field_validator("house_system", mode="before")
     @classmethod
     def _normalize_house_system(cls, value: str | bytes) -> str:
-        return normalize_house_system_code(value)
+        return normalize_natal_house_system_code(value)
 
 
 ChartSpec = NatalChartSpec

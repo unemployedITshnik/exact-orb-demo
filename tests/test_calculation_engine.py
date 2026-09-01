@@ -223,7 +223,7 @@ def test_engine_module_does_not_use_asyncio_to_thread() -> None:
     assert "asyncio.to_thread" not in inspect.getsource(engine_module)
 
 
-async def test_prevalidation_failure_does_not_call_executor_or_ephemeris_session(
+async def test_unsupported_house_system_does_not_call_executor_or_ephemeris_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captures = 0
@@ -238,8 +238,8 @@ async def test_prevalidation_failure_does_not_call_executor_or_ephemeris_session
     spec = NatalChartSpec.model_construct(
         technique="natal",
         chart_kind="natal",
-        include=None,
-        house_system="P",
+        include=DEFAULT_INCLUDE_BY_CHART_KIND["natal"],
+        house_system="K",
         rulership=RulershipScheme.COMBINED,
         near_interception_threshold=1.0,
     )
@@ -254,6 +254,7 @@ async def test_prevalidation_failure_does_not_call_executor_or_ephemeris_session
             await service.calculate(spec, _resolved(), run=_run())
 
     assert exc_info.value.code == "SPEC_INVALID"
+    assert exc_info.value.run_id == str(RUN_ID)
     assert captures == 0
 
 

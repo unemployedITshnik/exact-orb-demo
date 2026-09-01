@@ -32,6 +32,8 @@ async def test_engine_service_natal_matches_direct_calculate_natal() -> None:
 
     assert result.chart_kind == "natal"
     assert result.chart.chart_kind == "natal"
+    assert result.chart.house_system == "P"
+    assert direct.house_system == "P"
     assert result.chart.bodies is not None
     assert direct.bodies is not None
     assert result.chart.bodies["sun"].longitude == pytest.approx(direct.bodies["sun"].longitude)

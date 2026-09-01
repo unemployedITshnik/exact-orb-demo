@@ -22,7 +22,12 @@ from exact_orb.calculation import (
     calculation_key,
     canonical_key_payload,
 )
-from exact_orb.domain import DEFAULT_INCLUDE_BY_CHART_KIND, INCLUDE_BLOCKS, RulershipScheme
+from exact_orb.domain import (
+    DEFAULT_INCLUDE_BY_CHART_KIND,
+    INCLUDE_BLOCKS,
+    RulershipScheme,
+    normalize_natal_house_system_code,
+)
 
 
 pytestmark = pytest.mark.no_ephemeris_autoinit
@@ -149,7 +154,6 @@ def test_semantic_changes_change_key() -> None:
         (CalculationInput(utc_datetime=BASE_UTC, latitude=BASE_LATITUDE, longitude=BASE_LONGITUDE + 0.000001), base_spec, VERSION),
         (base_input, NatalChartSpec(chart_kind="cosmogram"), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", include=("houses", "positions")), VERSION),
-        (base_input, NatalChartSpec(chart_kind="natal", house_system="K"), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", rulership=RulershipScheme.MODERN), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", near_interception_threshold=2.0), VERSION),
         (base_input, base_spec, "test-version-2"),
@@ -178,6 +182,28 @@ def test_house_system_case_is_canonical_for_value_and_key() -> None:
 
     assert lower.house_system == "P"
     assert _key(_base_input(), lower) == _key(_base_input(), upper)
+
+
+@pytest.mark.parametrize("value", ("P", "p", b"P", b"p"))
+def test_natal_house_system_normalizer_accepts_only_placidus_forms(
+    value: str | bytes,
+) -> None:
+    assert normalize_natal_house_system_code(value) == "P"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("K", "O", "R", "C", "E", "W", "Z", "?", "PP", "Ж", b"\xff", 1, None),
+)
+def test_natal_house_system_normalizer_rejects_unsupported_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_natal_house_system_code(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("house_system", ("K", "Z", "?"))
+def test_natal_chart_spec_rejects_unsupported_house_system(house_system: str) -> None:
+    with pytest.raises(ValidationError, match="Placidus"):
+        NatalChartSpec(chart_kind="natal", house_system=house_system)
 
 
 def test_key_format_is_exact() -> None:

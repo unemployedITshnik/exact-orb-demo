@@ -560,7 +560,7 @@ async def test_different_keys_are_not_serialized_by_resolver() -> None:
     task_a = asyncio.create_task(resolver.ensure_chart(_spec(), _resolved(), run=_run(RUN_ID)))
     task_b = asyncio.create_task(
         resolver.ensure_chart(
-            NatalChartSpec(chart_kind="natal", house_system="K"),
+            NatalChartSpec(chart_kind="natal", near_interception_threshold=2.0),
             _resolved(),
             run=_run(RUN_ID_B),
         )
