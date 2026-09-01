@@ -38,6 +38,12 @@ from .types import ChartArtifact
 LOGGER = logging.getLogger(__name__)
 
 CacheOperation = Literal["get", "put"]
+CacheOutcome = Literal["hit", "miss"]
+
+
+@dataclass
+class _ResolutionState:
+    cache_outcome: CacheOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,7 @@ class _InFlight:
     task: asyncio.Task[ChartArtifact]
     leader_run_id: str
     started_at: float
+    state: _ResolutionState
 
 
 @dataclass
@@ -108,14 +115,7 @@ class ChartArtifactResolver:
     ) -> ChartArtifact:
         calc_input = calculation_input_from(resolved)
         key = calculation_key(calc_input, spec, self.version)
-        run_id = str(run.run_id)
-
-        artifact = await self._get_valid_hit(key, spec, run_id)
-        if artifact is not None:
-            return artifact
-
-        self.misses += 1
-        return await self._ensure_miss(key, spec, resolved, run)
+        return await self._ensure_singleflight(key, spec, resolved, run)
 
     async def _get_valid_hit(
         self,
@@ -167,7 +167,6 @@ class ChartArtifactResolver:
             )
             return None
 
-        self.hits += 1
         LOGGER.debug(
             "cache_hit run_id=%s key=%s chart_kind=%s",
             run_id,
@@ -176,7 +175,7 @@ class ChartArtifactResolver:
         )
         return artifact
 
-    async def _ensure_miss(
+    async def _ensure_singleflight(
         self,
         key: str,
         spec: ChartSpec,
@@ -187,11 +186,15 @@ class ChartArtifactResolver:
         # single-flight critical section in one event loop.
         entry = self._inflight.get(key)
         if entry is None:
-            task = asyncio.create_task(self._calculate_and_store(key, spec, resolved, run))
+            state = _ResolutionState()
+            task = asyncio.create_task(
+                self._resolve_and_store(key, spec, resolved, run, state)
+            )
             entry = _InFlight(
                 task=task,
                 leader_run_id=str(run.run_id),
                 started_at=self._clock(),
+                state=state,
             )
             self._inflight[key] = entry
             task.add_done_callback(_drain_task)
@@ -206,12 +209,36 @@ class ChartArtifactResolver:
 
         waiter = asyncio.shield(entry.task)
         try:
-            return await waiter
+            artifact = await waiter
+            return artifact.model_copy(deep=True)
         except asyncio.CancelledError:
             _remove_shield_exception_logger(entry.task)
             raise
         finally:
+            self._record_cache_outcome(entry.state.cache_outcome)
             waiter.add_done_callback(_drain_future)
+
+    async def _resolve_and_store(
+        self,
+        key: str,
+        spec: ChartSpec,
+        resolved: ResolvedBirthData,
+        run: RunContext,
+        state: _ResolutionState,
+    ) -> ChartArtifact:
+        try:
+            artifact = await self._get_valid_hit(key, spec, str(run.run_id))
+            if artifact is not None:
+                state.cache_outcome = "hit"
+                return artifact
+
+            state.cache_outcome = "miss"
+            return await self._calculate_and_store(key, spec, resolved, run)
+        finally:
+            current = asyncio.current_task()
+            entry = self._inflight.get(key)
+            if entry is not None and entry.task is current:
+                del self._inflight[key]
 
     async def _calculate_and_store(
         self,
@@ -220,28 +247,22 @@ class ChartArtifactResolver:
         resolved: ResolvedBirthData,
         run: RunContext,
     ) -> ChartArtifact:
+        result = await self.engine.calculate(spec, resolved, run=run)
+        run_id = str(run.run_id)
         try:
-            result = await self.engine.calculate(spec, resolved, run=run)
-            run_id = str(run.run_id)
-            try:
-                artifact = ChartArtifact(
-                    calculation_key=key,
-                    calculation_version=self.version,
-                    spec=spec,
-                    chart_kind=result.chart_kind,
-                    chart=result.chart,
-                    warnings=result.warnings,
-                )
-            except ValidationError:
-                raise ChartCalculationError("ENGINE_UNEXPECTED", run_id=run_id) from None
+            artifact = ChartArtifact(
+                calculation_key=key,
+                calculation_version=self.version,
+                spec=spec,
+                chart_kind=result.chart_kind,
+                chart=result.chart,
+                warnings=result.warnings,
+            )
+        except ValidationError:
+            raise ChartCalculationError("ENGINE_UNEXPECTED", run_id=run_id) from None
 
-            await self._try_store(key, artifact, run_id)
-            return artifact
-        finally:
-            current = asyncio.current_task()
-            entry = self._inflight.get(key)
-            if entry is not None and entry.task is current:
-                del self._inflight[key]
+        await self._try_store(key, artifact, run_id)
+        return artifact
 
     async def _try_store(self, key: str, artifact: ChartArtifact, run_id: str) -> None:
         key_prefix = _short_key(key)
@@ -320,6 +341,12 @@ class ChartArtifactResolver:
             state.suppressed,
         )
         self._degraded[op] = _DegradedOperation()
+
+    def _record_cache_outcome(self, outcome: CacheOutcome | None) -> None:
+        if outcome == "hit":
+            self.hits += 1
+        elif outcome == "miss":
+            self.misses += 1
 
 
 def _short_key(key: str) -> str:

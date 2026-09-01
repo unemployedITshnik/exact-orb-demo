@@ -65,10 +65,7 @@ end note
 A -> Artifacts : ensure_chart(spec, resolved, run_A)
 activate Artifacts
 
-Artifacts -> Cache : get(key)
-Cache --> Artifacts : None — промах
-
-Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(_calculate_and_store()),\nleader_run_id = run_A,\nstarted_at)
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(_resolve_and_store()),\nleader_run_id = run_A,\nstarted_at, state)
 
 note right of Artifacts
 inflight — обычный словарь в поле
@@ -85,7 +82,16 @@ Task, а не Future с ручным set_result:
 
 leader_run_id нужен присоединившимся
 для журнала, и взять его больше неоткуда.
+
+Task охватывает не только calculate + put,
+но и cache.get. Поэтому задержанный get,
+зафиксировавший старый None, не может
+обойти single-flight после записи первого
+результата.
 end note
+
+Artifacts -> Cache : task: get(key)
+Cache --> Artifacts : None — промах
 
 Artifacts -> Artifacts : журнал: calculation_started(run_A)
 
@@ -171,9 +177,12 @@ pop стоит в finally ВНУТРИ задачи:
 (§3.3.6).
 end note
 
-Artifacts --> A : ChartArtifact
+Artifacts -> Artifacts : model_copy(deep=True) для run_A
+Artifacts -> Artifacts : model_copy(deep=True) для run_B
+
+Artifacts --> A : изолированный ChartArtifact A
 deactivate Artifacts
-Artifacts --> B : тот же ChartArtifact
+Artifacts --> B : равный, но изолированный ChartArtifact B
 deactivate Artifacts
 
 

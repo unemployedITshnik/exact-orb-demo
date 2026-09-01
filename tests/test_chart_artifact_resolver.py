@@ -117,6 +117,25 @@ async def test_miss_calculates_stores_and_next_call_hits_equal_artifact() -> Non
     assert resolver.hit_ratio == 0.5
 
 
+async def test_mutating_miss_result_does_not_change_later_cache_hit() -> None:
+    original_warning = "original warning"
+    cache = FakeCache()
+    engine = FakeEngine(_result(warnings=(_warning(original_warning),)))
+    resolver = _resolver(cache, engine)
+
+    first = await resolver.ensure_chart(_spec(), _resolved(), run=_run())
+    first.chart.latitude = 0.0
+    first.chart.warnings[0].message = "mutated warning"
+
+    second = await resolver.ensure_chart(_spec(), _resolved(), run=_run(RUN_ID_B))
+
+    assert first is not second
+    assert first.chart is not second.chart
+    assert second.chart.latitude == 55.7558
+    assert second.chart.warnings[0].message == original_warning
+    assert engine.calls == 1
+
+
 async def test_version_change_misses_on_same_inputs() -> None:
     spec = _spec()
     resolved = _resolved()
@@ -335,8 +354,66 @@ async def test_concurrent_miss_singleflight_calls_engine_once() -> None:
 
     assert engine.calls == 1
     assert artifacts[0] == artifacts[1] == artifacts[2]
+    assert len({id(artifact) for artifact in artifacts}) == 3
+    assert len({id(artifact.chart) for artifact in artifacts}) == 3
+    assert len({id(artifact.chart.bodies) for artifact in artifacts}) == 3
+    assert cache.get_calls == [_key(spec, resolved)]
     assert len(cache.put_calls) == 1
     assert resolver.misses == 3
+    assert resolver._inflight == {}
+
+
+async def test_concurrent_callers_receive_deeply_isolated_artifacts() -> None:
+    original_warning = "shared calculation warning"
+    cache = FakeCache()
+    engine = BlockingEngine(result=_result(warnings=(_warning(original_warning),)))
+    resolver = _resolver(cache, engine)
+
+    first_task = asyncio.create_task(
+        resolver.ensure_chart(_spec(), _resolved(), run=_run(RUN_ID))
+    )
+    second_task = asyncio.create_task(
+        resolver.ensure_chart(_spec(), _resolved(), run=_run(RUN_ID_B))
+    )
+    await asyncio.wait_for(engine.first_entered.wait(), timeout=1.0)
+    engine.release.set()
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert first == second
+    assert first is not second
+    assert first.chart is not second.chart
+    assert first.chart.bodies is not second.chart.bodies
+    assert first.chart.warnings[0] is not second.chart.warnings[0]
+
+    first.chart.latitude = 0.0
+    first.chart.warnings[0].message = "mutated warning"
+
+    assert second.chart.latitude == 55.7558
+    assert second.chart.warnings[0].message == original_warning
+
+
+async def test_singleflight_covers_lookup_and_blocks_delayed_stale_miss() -> None:
+    cache = SnapshotBeforePutCache()
+    engine = FakeEngine(_result())
+    resolver = _resolver(cache, engine)
+    spec = _spec()
+    resolved = _resolved()
+
+    first_task = asyncio.create_task(resolver.ensure_chart(spec, resolved, run=_run(RUN_ID)))
+    second_task = asyncio.create_task(
+        resolver.ensure_chart(spec, resolved, run=_run(RUN_ID_B))
+    )
+    first, second = await asyncio.wait_for(
+        asyncio.gather(first_task, second_task),
+        timeout=1.0,
+    )
+
+    assert first == second
+    assert first is not second
+    assert cache.get_calls == [_key(spec, resolved)]
+    assert len(cache.put_calls) == 1
+    assert engine.calls == 1
+    assert resolver.misses == 2
     assert resolver._inflight == {}
 
 
@@ -812,6 +889,25 @@ class FakeCache:
         self.entries[key] = payload
 
 
+class SnapshotBeforePutCache(FakeCache):
+    """Return the value observed at get entry, even if a later put wins."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_put = asyncio.Event()
+
+    async def get(self, key: str) -> bytes | None:
+        self.get_calls.append(key)
+        snapshot = self.entries.get(key)
+        if len(self.get_calls) > 1:
+            await self.first_put.wait()
+        return snapshot
+
+    async def put(self, key: str, payload: bytes) -> None:
+        await super().put(key, payload)
+        self.first_put.set()
+
+
 class FakeEngine:
     def __init__(self, result: CalculationResult) -> None:
         self.result = result
@@ -852,9 +948,11 @@ class BlockingEngine:
         self,
         *,
         error: Exception | None = None,
+        result: CalculationResult | None = None,
         target_entries: int = 1,
     ) -> None:
         self.error = error
+        self.result = result
         self.target_entries = target_entries
         self.first_entered = asyncio.Event()
         self.target_entered = asyncio.Event()
@@ -880,6 +978,6 @@ class BlockingEngine:
             await self.release.wait()
             if self.error is not None:
                 raise self.error
-            return _result(chart_kind=spec.chart_kind)
+            return self.result or _result(chart_kind=spec.chart_kind)
         finally:
             self.active -= 1
