@@ -42,6 +42,8 @@ DEFAULT_STATION_ASPECT_ORB = 1.0
 APPLYING_DT = timedelta(hours=1)
 ROOT_TOLERANCE_DEGREES = 1e-7
 ROOT_DEDUP_TOLERANCE = timedelta(hours=1)
+STATION_SPEED_TOLERANCE_DEGREES_PER_DAY = 1e-8
+STATION_BISECTION_TOLERANCE_DEGREES_PER_DAY = 1e-10
 
 TRANSIT_BODY_IDS: dict[str, int] = {
     "sun": swiss_backend.swe.SUN,
@@ -362,6 +364,7 @@ def _calculate_transit_aspects(
     aspects: list[TransitAspect] = []
     config = AspectConfig.transit(max_orb=max_orb)
     for transit_name, position in positions.items():
+        body_window_samples: tuple[tuple[datetime, float, float, bool], ...] | None = None
         transit_point = PositionedPoint(
             chart="transit",
             body=transit_name,
@@ -387,7 +390,15 @@ def _calculate_transit_aspects(
                 flags,
             )
             next_orb = _aspect_orb(next_longitude, natal_longitude, aspect_angle)
-            exact_dates = _exact_dates_for_aspect(
+            if body_window_samples is None:
+                body_window_samples = _sample_aspect_window(
+                    position.swe_id,
+                    window_start,
+                    window_end,
+                    flags,
+                    transit_name,
+                )
+            exact_dates, closest_approach = _analyze_aspect_window(
                 position.swe_id,
                 natal_longitude,
                 aspect_angle,
@@ -395,15 +406,7 @@ def _calculate_transit_aspects(
                 window_end,
                 flags,
                 transit_name,
-            )
-            closest_approach = _closest_approach_for_aspect(
-                position.swe_id,
-                natal_longitude,
-                aspect_angle,
-                window_start,
-                window_end,
-                flags,
-                transit_name,
+                body_samples=body_window_samples,
             )
 
             aspects.append(
@@ -505,21 +508,32 @@ def _station_dates(
 ) -> tuple[tuple[datetime, float, float], ...]:
     step = timedelta(days=1)
     samples = _sample_speed(body_id, start, end, flags, body_name, step)
-    stations: list[tuple[datetime, float, float]] = []
+    crossing_endpoints: set[datetime] = set()
+    station_dates: list[datetime] = []
 
     for (left_dt, left_speed), (right_dt, right_speed) in zip(samples, samples[1:]):
-        if left_speed == 0.0:
-            stations.append((left_dt, left_speed, right_speed))
+        if left_speed * right_speed >= 0.0:
             continue
-        if left_speed * right_speed > 0.0:
-            continue
+        crossing_endpoints.update((left_dt, right_dt))
+        station_dates.append(_bisect_speed_zero(body_id, left_dt, right_dt, flags))
 
-        root = _bisect_speed_zero(body_id, left_dt, right_dt, flags)
+    station_dates.extend(
+        sample_dt
+        for sample_dt, speed in samples
+        if sample_dt not in crossing_endpoints
+        and abs(speed) <= STATION_SPEED_TOLERANCE_DEGREES_PER_DAY
+    )
+
+    stations: list[tuple[datetime, float, float, float]] = []
+    for root in sorted(station_dates):
         before = _body_longitude_speed(root - timedelta(hours=6), body_id, flags)[1]
         after = _body_longitude_speed(root + timedelta(hours=6), body_id, flags)[1]
-        stations.append((root, before, after))
+        if before * after >= 0.0:
+            continue
+        root_speed = _body_longitude_speed(root, body_id, flags)[1]
+        stations.append((root, before, after, abs(root_speed)))
 
-    return tuple(_dedupe_station_dates(stations))
+    return _dedupe_station_dates(stations)
 
 
 def _sample_speed(
@@ -531,27 +545,33 @@ def _sample_speed(
     step: timedelta,
 ) -> list[tuple[datetime, float]]:
     samples: list[tuple[datetime, float]] = []
-    current = start
-    while current < end:
+    for current in _inclusive_datetimes(start, end, step):
         try:
             speed = _body_longitude_speed(current, body_id, flags)[1]
         except RuntimeError as exc:
             raise RuntimeError(f"could not scan stations for {body_name!r}: {exc}") from exc
         samples.append((current, speed))
-        current += step
-    samples.append((end, _body_longitude_speed(end, body_id, flags)[1]))
     return samples
 
 
 def _bisect_speed_zero(body_id: int, left: datetime, right: datetime, flags: int) -> datetime:
     left_speed = _body_longitude_speed(left, body_id, flags)[1]
     right_speed = _body_longitude_speed(right, body_id, flags)[1]
+    best_speed, best_dt = min(
+        ((abs(left_speed), left), (abs(right_speed), right)),
+        key=lambda item: (item[0], item[1]),
+    )
 
     for _ in range(48):
         midpoint = left + (right - left) / 2
         midpoint_speed = _body_longitude_speed(midpoint, body_id, flags)[1]
-        if abs(midpoint_speed) < 1e-10:
+        if (abs(midpoint_speed), midpoint) < (best_speed, best_dt):
+            best_speed = abs(midpoint_speed)
+            best_dt = midpoint
+        if abs(midpoint_speed) < STATION_BISECTION_TOLERANCE_DEGREES_PER_DAY:
             return midpoint
+        if midpoint == left or midpoint == right:
+            break
         if left_speed * midpoint_speed <= 0.0:
             right = midpoint
             right_speed = midpoint_speed
@@ -560,18 +580,27 @@ def _bisect_speed_zero(body_id: int, left: datetime, right: datetime, flags: int
             left_speed = midpoint_speed
 
     _ = right_speed
-    return left + (right - left) / 2
+    return best_dt
 
 
 def _dedupe_station_dates(
-    stations: list[tuple[datetime, float, float]],
+    stations: list[tuple[datetime, float, float, float]],
 ) -> tuple[tuple[datetime, float, float], ...]:
-    deduped: list[tuple[datetime, float, float]] = []
-    for station in sorted(stations, key=lambda item: item[0]):
-        if deduped and abs(station[0] - deduped[-1][0]) < ROOT_DEDUP_TOLERANCE:
-            continue
-        deduped.append(station)
-    return tuple(deduped)
+    if not stations:
+        return ()
+
+    ordered = sorted(stations, key=lambda item: item[0])
+    clusters: list[list[tuple[datetime, float, float, float]]] = [[ordered[0]]]
+    for station in ordered[1:]:
+        if station[0] - clusters[-1][-1][0] < ROOT_DEDUP_TOLERANCE:
+            clusters[-1].append(station)
+        else:
+            clusters.append([station])
+
+    return tuple(
+        min(cluster, key=lambda item: (item[3], item[0]))[:3]
+        for cluster in clusters
+    )
 
 
 def _exact_dates_for_aspect(
@@ -583,52 +612,16 @@ def _exact_dates_for_aspect(
     flags: int,
     body_name: str,
 ) -> tuple[datetime, ...]:
-    roots: list[datetime] = []
-    step = timedelta(days=_scan_step_days(body_name))
-    targets = _aspect_targets(natal_longitude, aspect_angle)
-
-    for target in targets:
-        previous_dt = start
-        previous_value = _signed_delta_at(previous_dt, body_id, target, flags)
-        current_dt = start + step
-
-        while current_dt <= end:
-            current_value = _signed_delta_at(current_dt, body_id, target, flags)
-            if abs(previous_value) <= ROOT_TOLERANCE_DEGREES:
-                roots.append(previous_dt)
-            if _has_root_between(previous_value, current_value):
-                roots.append(
-                    _bisect_signed_delta(
-                        body_id,
-                        target,
-                        previous_dt,
-                        current_dt,
-                        previous_value,
-                        current_value,
-                        flags,
-                    )
-                )
-
-            previous_dt = current_dt
-            previous_value = current_value
-            current_dt += step
-
-        if previous_dt < end:
-            current_value = _signed_delta_at(end, body_id, target, flags)
-            if _has_root_between(previous_value, current_value):
-                roots.append(
-                    _bisect_signed_delta(
-                        body_id,
-                        target,
-                        previous_dt,
-                        end,
-                        previous_value,
-                        current_value,
-                        flags,
-                    )
-                )
-
-    return tuple(_dedupe_datetimes(roots))
+    exact_dates, _ = _analyze_aspect_window(
+        body_id,
+        natal_longitude,
+        aspect_angle,
+        start,
+        end,
+        flags,
+        body_name,
+    )
+    return exact_dates
 
 
 def _closest_approach_for_aspect(
@@ -640,33 +633,135 @@ def _closest_approach_for_aspect(
     flags: int,
     body_name: str,
 ) -> ExactApproach:
+    _, closest_approach = _analyze_aspect_window(
+        body_id,
+        natal_longitude,
+        aspect_angle,
+        start,
+        end,
+        flags,
+        body_name,
+    )
+    return closest_approach
+
+
+def _sample_aspect_window(
+    body_id: int,
+    start: datetime,
+    end: datetime,
+    flags: int,
+    body_name: str,
+) -> tuple[tuple[datetime, float, float, bool], ...]:
     step = timedelta(days=_scan_step_days(body_name))
-    samples: list[tuple[datetime, float]] = []
+    base_samples: list[tuple[datetime, float, float]] = []
+    for sample_dt in _inclusive_datetimes(start, end, step):
+        longitude, speed, _, _ = _body_longitude_speed(sample_dt, body_id, flags)
+        base_samples.append((sample_dt, longitude, speed))
 
-    current = start
-    while current < end:
-        samples.append((current, _orb_at(current, body_id, natal_longitude, aspect_angle, flags)))
-        current += step
-    samples.append((end, _orb_at(end, body_id, natal_longitude, aspect_angle, flags)))
+    turning_base_indices = {
+        index
+        for index in range(1, len(base_samples) - 1)
+        if abs(base_samples[index][2]) <= STATION_SPEED_TOLERANCE_DEGREES_PER_DAY
+        and base_samples[index - 1][2] * base_samples[index + 1][2] < 0.0
+    }
+    samples: list[tuple[datetime, float, float, bool]] = []
+    for index, (left, right) in enumerate(zip(base_samples, base_samples[1:])):
+        samples.append((*left, index in turning_base_indices))
+        if left[2] * right[2] >= 0.0:
+            continue
+        turning_dt = _bisect_speed_zero(body_id, left[0], right[0], flags)
+        if not left[0] < turning_dt < right[0]:
+            continue
+        longitude, speed, _, _ = _body_longitude_speed(turning_dt, body_id, flags)
+        samples.append((turning_dt, longitude, speed, True))
 
-    best_dt, best_orb = min(samples, key=lambda item: item[1])
-    for index in range(1, len(samples) - 1):
-        previous_orb = samples[index - 1][1]
-        current_orb = samples[index][1]
-        next_orb = samples[index + 1][1]
+    last_index = len(base_samples) - 1
+    samples.append((*base_samples[-1], last_index in turning_base_indices))
+    return tuple(samples)
+
+
+def _analyze_aspect_window(
+    body_id: int,
+    natal_longitude: float,
+    aspect_angle: float,
+    start: datetime,
+    end: datetime,
+    flags: int,
+    body_name: str,
+    *,
+    body_samples: Sequence[tuple[datetime, float, float, bool]] | None = None,
+) -> tuple[tuple[datetime, ...], ExactApproach]:
+    if body_samples is None:
+        body_samples = _sample_aspect_window(body_id, start, end, flags, body_name)
+
+    sample_orbs = [
+        (sample_dt, _aspect_orb(longitude, natal_longitude, aspect_angle), is_turning)
+        for sample_dt, longitude, _, is_turning in body_samples
+    ]
+    closest_candidates = [(sample_dt, orb) for sample_dt, orb, _ in sample_orbs]
+    roots: list[tuple[datetime, float]] = []
+
+    for target in _aspect_targets(natal_longitude, aspect_angle):
+        target_samples = [
+            (sample_dt, _signed_delta(longitude, target))
+            for sample_dt, longitude, _, _ in body_samples
+        ]
+
+        roots.extend(
+            (sample_dt, abs(signed_delta))
+            for sample_dt, signed_delta in target_samples
+            if abs(signed_delta) <= ROOT_TOLERANCE_DEGREES
+        )
+
+        for (left_dt, left_value), (right_dt, right_value) in zip(
+            target_samples,
+            target_samples[1:],
+        ):
+            if left_value * right_value >= 0.0 or not _has_root_between(
+                left_value,
+                right_value,
+            ):
+                continue
+            root = _bisect_signed_delta(
+                body_id,
+                target,
+                left_dt,
+                right_dt,
+                left_value,
+                right_value,
+                flags,
+            )
+            longitude, _, _, _ = _body_longitude_speed(root, body_id, flags)
+            target_orb = abs(_signed_delta(longitude, target))
+            root_orb = _aspect_orb(longitude, natal_longitude, aspect_angle)
+            roots.append((root, target_orb))
+            closest_candidates.append((root, root_orb))
+
+    for index in range(1, len(sample_orbs) - 1):
+        if sample_orbs[index][2]:
+            continue
+        previous_orb = sample_orbs[index - 1][1]
+        current_orb = sample_orbs[index][1]
+        next_orb = sample_orbs[index + 1][1]
         if current_orb <= previous_orb and current_orb <= next_orb:
             refined_dt, refined_orb = _golden_section_minimize_orb(
                 body_id,
                 natal_longitude,
                 aspect_angle,
-                samples[index - 1][0],
-                samples[index + 1][0],
+                sample_orbs[index - 1][0],
+                sample_orbs[index + 1][0],
                 flags,
             )
-            if refined_orb < best_orb:
-                best_dt, best_orb = refined_dt, refined_orb
+            closest_candidates.append((refined_dt, refined_orb))
 
-    return ExactApproach(datetime_utc=best_dt, orb=best_orb)
+    best_dt, best_orb = min(closest_candidates, key=lambda item: (item[1], item[0]))
+    if best_orb <= ROOT_TOLERANCE_DEGREES:
+        roots.append((best_dt, best_orb))
+
+    return _dedupe_exact_candidates(roots), ExactApproach(
+        datetime_utc=best_dt,
+        orb=best_orb,
+    )
 
 
 def _golden_section_minimize_orb(
@@ -750,13 +845,24 @@ def _bisect_signed_delta(
     return left + (right - left) / 2
 
 
-def _dedupe_datetimes(values: list[datetime]) -> list[datetime]:
-    deduped: list[datetime] = []
-    for value in sorted(values):
-        if deduped and abs(value - deduped[-1]) <= ROOT_DEDUP_TOLERANCE:
-            continue
-        deduped.append(value)
-    return deduped
+def _dedupe_exact_candidates(
+    candidates: list[tuple[datetime, float]],
+) -> tuple[datetime, ...]:
+    if not candidates:
+        return ()
+
+    ordered = sorted(candidates, key=lambda item: item[0])
+    clusters: list[list[tuple[datetime, float]]] = [[ordered[0]]]
+    for candidate in ordered[1:]:
+        if candidate[0] - clusters[-1][-1][0] <= ROOT_DEDUP_TOLERANCE:
+            clusters[-1].append(candidate)
+        else:
+            clusters.append([candidate])
+
+    return tuple(
+        min(cluster, key=lambda item: (item[1], item[0]))[0]
+        for cluster in clusters
+    )
 
 
 def _natal_points(natal: NatalChart) -> dict[str, float]:
@@ -848,6 +954,30 @@ def _normalize_location(
         latitude, longitude, house_system = location
         return TransitLocation(latitude=latitude, longitude=longitude, house_system=house_system)
     raise ValueError("location must be TransitLocation, mapping, (lat, lon), or (lat, lon, hsys)")
+
+
+def _inclusive_datetimes(
+    start: datetime,
+    end: datetime,
+    step: timedelta,
+) -> tuple[datetime, ...]:
+    if end < start:
+        raise ValueError("scan end must not be before start")
+    if step <= timedelta(0):
+        raise ValueError("scan step must be positive")
+
+    values = [start]
+    if end == start:
+        return tuple(values)
+    if step >= end - start:
+        return start, end
+
+    current = start + step
+    while current < end:
+        values.append(current)
+        current += step
+    values.append(end)
+    return tuple(values)
 
 
 def _scan_step_days(body_name: str) -> float:
