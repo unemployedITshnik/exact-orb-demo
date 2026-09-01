@@ -61,7 +61,9 @@ end note
 Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, CALCULATION_VERSION)
 Keys --> Artifacts : key
 
-Artifacts -> Cache : get(key)
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(_resolve_and_store(...)),\nleader_run_id = run_id, state)
+
+Artifacts -> Cache : task: get(key)
 Cache --> Artifacts : gzip-сжатые байты JSON
 
 Artifacts -> Artifacts : gzip.decompress → JSON\n→ ChartArtifact.model_validate_json\n≈ 0.5 мс
@@ -94,17 +96,19 @@ end note
 
 alt оба равенства выполнены — нормальный путь
     Artifacts -> Artifacts : журнал: cache_hit(run_id, key)
-    Artifacts --> Handler : ChartArtifact
+    Artifacts -> Artifacts : finally: inflight.pop(key)\nmodel_copy(deep=True)
+    Artifacts --> Handler : изолированный ChartArtifact
     deactivate Artifacts
 
     note right of Artifacts
     Движок не вызывается ни разу.
     put не выполняется.
 
-    Каждое попадание порождает новый
-    объект из байтов, поэтому
-    одновременные вызывающие
-    физически не делят экземпляр (§8.4).
+    Одна общая task выполняет get и decode.
+    Каждый ожидающий получает глубокую
+    копию результата task, поэтому
+    одновременные вызывающие не делят
+    mutable-вложенные объекты (§3.3).
     end note
 
 else не совпало — в исправной системе невозможно
@@ -117,7 +121,8 @@ else не совпало — в исправной системе невозмо
 
     Artifacts -> Cache : put(key, bytes)\n— заменит негодную запись
 
-    Artifacts --> Handler : ChartArtifact
+    Artifacts -> Artifacts : finally: inflight.pop(key)\nmodel_copy(deep=True)
+    Artifacts --> Handler : изолированный ChartArtifact
     deactivate Artifacts
 
     note right of Artifacts
@@ -150,7 +155,8 @@ else payload не читается
 
     Artifacts -> Cache : put(key, bytes)
 
-    Artifacts --> Handler : ChartArtifact
+    Artifacts -> Artifacts : finally: inflight.pop(key)\nmodel_copy(deep=True)
+    Artifacts --> Handler : изолированный ChartArtifact
     deactivate Artifacts
 
     note right of Artifacts

@@ -93,17 +93,9 @@ CALCULATION_VERSION (§3.1.5) =
 end note
 
 
-== 2. Кэш ==
+== 2. Дедупликация полного разрешения ==
 
-Artifacts -> Cache : get(key)
-Cache --> Artifacts : None — промах
-
-Artifacts -> Artifacts : журнал: cache_miss(run_id, key)
-
-
-== 3. Дедупликация ==
-
-Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(...), leader_run_id = run_id)\n— этот вызов лидер
+Artifacts -> Artifacts : inflight[key] = InFlight(\ntask = create_task(_resolve_and_store(...)),\nleader_run_id = run_id, state)\n— этот вызов лидер
 
 note right of Artifacts
 Single-flight принадлежит резолверу,
@@ -112,7 +104,18 @@ Single-flight принадлежит резолверу,
 
 Параллельный вызов по этому ключу
 пойдёт ждать task — сценарий A-4.
+Task охватывает cache.get, расчёт и put,
+поэтому задержанный старый miss не может
+запустить второй расчёт.
 end note
+
+
+== 3. Кэш внутри общей task ==
+
+Artifacts -> Cache : get(key)
+Cache --> Artifacts : None — промах
+
+Artifacts -> Artifacts : журнал: cache_miss(run_id, key)
 
 
 == 4. Расчёт ==
@@ -203,10 +206,16 @@ end note
 
 Artifacts -> Artifacts : finally внутри task:\ninflight.pop(key)
 
-Artifacts --> Handler : ChartArtifact
+Artifacts -> Artifacts : model_copy(deep=True)
+Artifacts --> Handler : изолированный ChartArtifact
 deactivate Artifacts
 
 note over Handler
+Внутренний экземпляр task сериализован
+в кэш и не передаётся вызывающему коду.
+Каждый caller получает собственный
+mutable-граф chart и вложенных моделей.
+
 Резолвер в сессию не пишет, profile_version
 не знает и не решает, становится ли карта
 активной. Это работа handler'а
