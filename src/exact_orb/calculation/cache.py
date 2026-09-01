@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from math import isfinite
 import time
 from typing import Protocol, runtime_checkable
 
@@ -34,10 +35,19 @@ class InMemoryCalculationCache:
         ttl_seconds: float | None,
         clock: Callable[[], float] | None = None,
     ) -> None:
-        if max_entries <= 0:
-            raise ValueError("max_entries must be positive")
-        if ttl_seconds is not None and ttl_seconds <= 0:
-            raise ValueError("ttl_seconds must be positive or None")
+        if (
+            isinstance(max_entries, bool)
+            or not isinstance(max_entries, int)
+            or max_entries <= 0
+        ):
+            raise ValueError("max_entries must be a positive integer")
+        if ttl_seconds is not None and (
+            isinstance(ttl_seconds, bool)
+            or not isinstance(ttl_seconds, (int, float))
+            or not isfinite(ttl_seconds)
+            or ttl_seconds <= 0
+        ):
+            raise ValueError("ttl_seconds must be a finite positive number or None")
 
         self.max_entries = max_entries
         self.ttl_seconds = ttl_seconds

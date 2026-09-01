@@ -49,6 +49,23 @@ end box
 Handler -> Artifacts : ensure_chart(spec, resolved, run)
 activate Artifacts
 
+Artifacts -> Artifacts : validate_geography(resolved)
+
+alt GEOGRAPHY_INVALID — до ключа, cache и single-flight
+
+    Artifacts --> Handler : ChartCalculationError(\nGEOGRAPHY_INVALID, run_id)
+
+    note over Artifacts, Cache
+    CalculationInput и ключ не строятся.
+    Cache.get / Cache.put не вызываются,
+    inflight остаётся пустым.
+    Голый pydantic ValidationError
+    наружу не выходит (§2.2).
+    end note
+
+else География валидна — ключ построен, получен промах
+
+Artifacts -> Artifacts : CalculationInput + calculation_key
 Artifacts -> Cache : get(key)
 Cache --> Artifacts : None — промах
 
@@ -68,10 +85,10 @@ note over Artifacts, Engine
 end note
 
 
-alt SPEC_INVALID / GEOGRAPHY_INVALID — до лока
+alt SPEC_INVALID / защитный GEOGRAPHY_INVALID — до лока
 
     Engine -> Engine : предпроверка не прошла
-    Engine --> Artifacts : ChartCalculationError(SPEC_INVALID)
+    Engine --> Artifacts : ChartCalculationError(\nSPEC_INVALID / GEOGRAPHY_INVALID)
 
     note right of Engine
     Расчётный слот не занят, поток
@@ -144,6 +161,9 @@ note over Artifacts, Cache
 end note
 
 Artifacts --> Handler : исключение
+
+end
+
 deactivate Artifacts
 
 Handler -> Handler : базовый handler:\nкласс исключения → класс исхода
