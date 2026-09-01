@@ -226,6 +226,14 @@ def test_transiting_body_is_conjunct_its_own_natal_position(
         key = (body, "conjunction", body)
         assert key in lookup
         assert lookup[key] == pytest.approx(0.0, abs=1e-6)
+        self_conjunction = next(
+            aspect
+            for aspect in self_transit.aspects
+            if aspect.from_point.body == body
+            and aspect.aspect.value == "conjunction"
+            and aspect.to.body == body
+        )
+        assert self_conjunction.exact_dates == (REFERENCE["datetime_utc"],)
 
 
 def test_calculate_transits_requires_natal_houses() -> None:
@@ -451,6 +459,20 @@ def test_normalize_moment_rejects_end_before_start() -> None:
 
     with pytest.raises(ValueError, match="end must be after start"):
         transit_calc._normalize_moment(TransitDateRange(start=start, end=end), exact_window_months=12)
+
+
+@pytest.mark.parametrize(
+    "moment",
+    [
+        TransitDateRange(start=REFERENCE["datetime_utc"], end=REFERENCE["datetime_utc"]),
+        (REFERENCE["datetime_utc"], REFERENCE["datetime_utc"]),
+    ],
+)
+def test_normalize_moment_rejects_zero_length_explicit_range(
+    moment: TransitDateRange | tuple[datetime, datetime],
+) -> None:
+    with pytest.raises(ValueError, match="end must be after start"):
+        transit_calc._normalize_moment(moment, exact_window_months=0)
 
 
 def test_normalize_moment_builds_symmetric_window_around_single_datetime() -> None:
