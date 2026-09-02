@@ -16,6 +16,7 @@ from exact_orb import config, swiss_backend
 from exact_orb.config import (
     EphemerisNotInitializedError,
     EphemerisPathMismatchError,
+    EphemerisSelenaMethodMismatchError,
     configure_ephemeris,
     get_ephemeris_status,
     get_selena_method_name,
@@ -103,7 +104,10 @@ def test_configure_ephemeris_is_idempotent_without_repeating_backend_or_status_l
     caplog.set_level(logging.DEBUG, logger="exact_orb.config")
     ephe_path = REPO_ROOT / "ephe"
 
-    first = configure_ephemeris(ephe_path)
+    first = configure_ephemeris(ephe_path, selena_method="true_perigee")
+
+    def fail_read() -> Mapping[str, Any]:
+        raise AssertionError("pyproject should not be read after startup")
 
     def fail_resolve(
         path: object,
@@ -112,13 +116,56 @@ def test_configure_ephemeris_is_idempotent_without_repeating_backend_or_status_l
         _ = path, pyproject_config
         raise AssertionError("path resolution should not run for configure_ephemeris(None)")
 
+    monkeypatch.setattr(config, "_read_exact_orb_pyproject_config", fail_read)
     monkeypatch.setattr(config, "_resolve_ephemeris_path", fail_resolve)
+    monkeypatch.setenv(config.SELENA_METHOD_ENV_VAR, "mean_perigee")
     second = configure_ephemeris(None)
     third = configure_ephemeris(ephe_path)
+    fourth = configure_ephemeris(None, selena_method="true_perigee")
+    fifth = configure_ephemeris(ephe_path, selena_method="true_perigee")
 
-    assert first is second is third
+    assert first is second is third is fourth is fifth
+    assert get_selena_method_name() == "true_perigee"
     assert spy.set_ephe_path_calls == [first.path]
     assert len(_status_log_records(caplog)) == 1
+
+
+@pytest.mark.no_ephemeris_autoinit
+@pytest.mark.parametrize("repeat_path", [None, REPO_ROOT / "ephe"])
+def test_configure_ephemeris_rejects_conflicting_explicit_selena_method(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    repeat_path: Path | None,
+) -> None:
+    spy = SpySwe()
+    monkeypatch.setattr(swiss_backend, "swe", spy)
+    caplog.set_level(logging.DEBUG, logger="exact_orb.config")
+    ephe_path = REPO_ROOT / "ephe"
+    first = configure_ephemeris(ephe_path, selena_method="mean_perigee")
+
+    with pytest.raises(
+        EphemerisSelenaMethodMismatchError,
+        match="already configured as 'mean_perigee'.*'true_perigee'",
+    ):
+        configure_ephemeris(repeat_path, selena_method="true_perigee")
+
+    assert get_ephemeris_status() is first
+    assert get_selena_method_name() == "mean_perigee"
+    assert spy.set_ephe_path_calls == [first.path]
+    assert len(_status_log_records(caplog)) == 1
+
+
+@pytest.mark.no_ephemeris_autoinit
+def test_configure_ephemeris_validates_explicit_selena_method_after_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(swiss_backend, "swe", SpySwe())
+    configure_ephemeris(REPO_ROOT / "ephe", selena_method="mean_perigee")
+
+    with pytest.raises(ValueError, match="selena_method must be"):
+        configure_ephemeris(None, selena_method="bad-method")
+
+    assert get_selena_method_name() == "mean_perigee"
 
 
 @pytest.mark.no_ephemeris_autoinit
@@ -132,10 +179,57 @@ def test_configure_ephemeris_rejects_different_path(
     first.mkdir()
     second.mkdir()
 
-    configure_ephemeris(first)
+    configure_ephemeris(first, selena_method="mean_perigee")
 
     with pytest.raises(EphemerisPathMismatchError):
-        configure_ephemeris(second)
+        configure_ephemeris(second, selena_method="true_perigee")
+
+    assert get_selena_method_name() == "mean_perigee"
+
+
+@pytest.mark.no_ephemeris_autoinit
+def test_configure_ephemeris_serializes_conflicting_selena_methods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spy = SpySwe()
+    monkeypatch.setattr(swiss_backend, "swe", spy)
+    barrier = threading.Barrier(3)
+    results: list[tuple[str, object]] = []
+    errors: list[tuple[str, BaseException]] = []
+
+    def configure(method: str) -> None:
+        try:
+            barrier.wait(TIMEOUT_SECONDS)
+            results.append(
+                (
+                    method,
+                    configure_ephemeris(REPO_ROOT / "ephe", selena_method=method),
+                )
+            )
+        except BaseException as exc:
+            errors.append((method, exc))
+
+    threads = [
+        threading.Thread(target=configure, args=("mean_perigee",)),
+        threading.Thread(target=configure, args=("true_perigee",)),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait(TIMEOUT_SECONDS)
+    for thread in threads:
+        thread.join(TIMEOUT_SECONDS)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 1
+    assert len(errors) == 1
+    successful_method, _ = results[0]
+    rejected_method, error = errors[0]
+    assert successful_method != rejected_method
+    assert isinstance(error, EphemerisSelenaMethodMismatchError)
+    assert successful_method in str(error)
+    assert rejected_method in str(error)
+    assert get_selena_method_name() == successful_method
+    assert spy.set_ephe_path_calls == [get_ephemeris_status().path]
 
 
 @pytest.mark.no_ephemeris_autoinit
@@ -315,6 +409,66 @@ def test_get_selena_method_name_uses_frozen_default_without_runtime_io(
 
     assert get_selena_method_name() == "true_perigee"
     assert get_selena_method_name("mean_perigee") == "mean_perigee"
+
+
+@pytest.mark.no_ephemeris_autoinit
+def test_environment_selena_method_overrides_project_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.SELENA_METHOD_ENV_VAR, "mean_perigee")
+    configure_ephemeris(REPO_ROOT / "ephe")
+
+    assert get_selena_method_name() == "mean_perigee"
+
+
+def test_project_config_reader_is_independent_of_cwd_and_resolves_relative_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "application"
+    package_dir = project_root / "src" / "exact_orb"
+    outside = tmp_path / "outside"
+    package_dir.mkdir(parents=True)
+    outside.mkdir()
+    (project_root / "pyproject.toml").write_text(
+        """
+[tool.exact_orb]
+ephemeris_path = "assets/ephe"
+log_dir = "var/log"
+llm_timeout = 17
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "_PROJECT_CONFIG_SEARCH_START", package_dir)
+    monkeypatch.chdir(outside)
+
+    assert config.read_exact_orb_pyproject_value("ephemeris_path") == str(
+        (project_root / "assets" / "ephe").resolve()
+    )
+    assert config.read_exact_orb_pyproject_value("log_dir") == str(
+        (project_root / "var" / "log").resolve()
+    )
+    assert config.read_exact_orb_pyproject_value("llm_timeout") == 17
+
+
+@pytest.mark.no_ephemeris_autoinit
+def test_missing_project_config_preserves_selena_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_dir = (
+        Path(tmp_path.anchor)
+        / f"exact-orb-no-project-{tmp_path.name}"
+        / "exact_orb"
+    )
+    monkeypatch.setattr(config, "_PROJECT_CONFIG_SEARCH_START", package_dir)
+    monkeypatch.delenv(config.SELENA_METHOD_ENV_VAR, raising=False)
+    monkeypatch.setattr(swiss_backend, "swe", SpySwe())
+
+    configure_ephemeris(tmp_path / "ephe")
+
+    assert get_selena_method_name() == "mean_perigee"
+    assert config.read_exact_orb_pyproject_value("selena_method") is None
 
 
 def test_invalid_explicit_selena_method_keeps_value_error() -> None:

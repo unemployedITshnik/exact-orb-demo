@@ -27,7 +27,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def ephemeris_runtime(request: pytest.FixtureRequest) -> Iterator[None]:
     _reset_ephemeris_state_for_tests()
     if request.node.get_closest_marker("no_ephemeris_autoinit") is None:
-        configure_ephemeris(REPO_ROOT / "ephe")
+        configure_ephemeris(REPO_ROOT / "ephe", selena_method="true_perigee")
     try:
         yield
     finally:

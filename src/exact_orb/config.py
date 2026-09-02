@@ -19,6 +19,7 @@ from exact_orb.errors import (
     EphemerisNotInitializedError,
     EphemerisPathMismatchError,
     EphemerisRuntimeError,
+    EphemerisSelenaMethodMismatchError,
     EphemerisSessionRequiredError,
 )
 
@@ -28,6 +29,7 @@ EPHEMERIS_ENV_VAR = "EXACT_ORB_EPHE_PATH"
 REQUIRED_EPHEMERIS_FILES = ("sepl_18.se1", "semo_18.se1", "seas_18.se1")
 SELENA_METHOD_ENV_VAR = "EXACT_ORB_SELENA_METHOD"
 SelenaMethodName = Literal["mean_perigee", "true_perigee"]
+_PROJECT_CONFIG_SEARCH_START = Path(__file__).resolve().parent
 
 _STATE: "_EphemerisRuntimeState | None" = None
 
@@ -61,15 +63,15 @@ def configure_ephemeris(
 ) -> EphemerisStatus:
     """Configure Swiss Ephemeris explicitly at process startup.
 
-    The path priority is: explicit argument, ``EXACT_ORB_EPHE_PATH``,
-    ``[tool.exact_orb].ephemeris_path`` in ``pyproject.toml``, then
-    ``data/ephe``.
+    Configuration is resolved once and frozen for the process. The priority is:
+    explicit argument, environment, the exact-orb project ``pyproject.toml``,
+    then the code default.
     """
 
     global _STATE
 
     state = _STATE
-    if state is not None and path is None:
+    if state is not None and path is None and selena_method is None:
         return state.status
 
     with ephemeris_session():
@@ -84,6 +86,13 @@ def configure_ephemeris(
                     "ephemeris path is already configured as %r, got %r"
                     % (state.status.path, os.fspath(path))
                 )
+            if selena_method is not None:
+                requested_method = _validate_selena_method_name(selena_method)
+                if requested_method != state.selena_method:
+                    raise EphemerisSelenaMethodMismatchError(
+                        "selena method is already configured as %r, got %r"
+                        % (state.selena_method, requested_method)
+                    )
             return state.status
 
         pyproject_config = _read_exact_orb_pyproject_config()
@@ -146,7 +155,7 @@ def get_selena_method_name(method: str | None = None) -> SelenaMethodName:
 
 
 def read_exact_orb_pyproject_value(name: str) -> Any | None:
-    """Return one value from ``[tool.exact_orb]`` in the nearest pyproject."""
+    """Return one value from the exact-orb project ``pyproject.toml``."""
 
     data, directory = _read_exact_orb_pyproject_config_with_directory()
     if data is None or directory is None:
@@ -175,8 +184,10 @@ def _read_exact_orb_pyproject_config() -> Mapping[str, Any]:
     return _resolve_pyproject_paths(data, directory)
 
 
-def _read_exact_orb_pyproject_config_with_directory() -> tuple[dict[str, Any] | None, Path | None]:
-    for directory in (Path.cwd(), *Path.cwd().parents):
+def _read_exact_orb_pyproject_config_with_directory(
+) -> tuple[dict[str, Any] | None, Path | None]:
+    search_start = _PROJECT_CONFIG_SEARCH_START.resolve()
+    for directory in (search_start, *search_start.parents):
         pyproject = directory / "pyproject.toml"
         if not pyproject.exists():
             continue
@@ -310,6 +321,7 @@ __all__ = [
     "EphemerisNotInitializedError",
     "EphemerisPathMismatchError",
     "EphemerisRuntimeError",
+    "EphemerisSelenaMethodMismatchError",
     "EphemerisSessionRequiredError",
     "EphemerisStatus",
     "SelenaMethodName",

@@ -19,6 +19,10 @@ class EphemerisPathMismatchError(EphemerisConfigurationError):
     """Raised when runtime receives a path different from the frozen path."""
 
 
+class EphemerisSelenaMethodMismatchError(EphemerisConfigurationError):
+    """Raised when runtime receives a Selena method different from startup."""
+
+
 class EphemerisSessionRequiredError(EphemerisRuntimeError):
     """Raised when Swiss Ephemeris is called outside an ephemeris session."""
 
