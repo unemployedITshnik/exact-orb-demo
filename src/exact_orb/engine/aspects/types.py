@@ -120,17 +120,17 @@ class AspectConfig(BaseModel):
 
     @classmethod
     def natal(cls, *, max_orb: float | None = None) -> "AspectConfig":
-        config = cls(mode="natal")
+        natal_orbs = _default_natal_orbs()
         if max_orb is not None:
-            config.natal_orbs.max_orb = max_orb
-        return config
+            natal_orbs = _with_max_orb(natal_orbs, max_orb)
+        return cls(mode="natal", natal_orbs=natal_orbs)
 
     @classmethod
     def transit(cls, *, max_orb: float | None = None) -> "AspectConfig":
-        config = cls(mode="transit")
+        transit_orbs = _default_transit_orbs()
         if max_orb is not None:
-            config.transit_orbs.max_orb = max_orb
-        return config
+            transit_orbs = _with_max_orb(transit_orbs, max_orb)
+        return cls(mode="transit", transit_orbs=transit_orbs)
 
 
 ASPECT_ANGLES: dict[AspectType, float] = {
@@ -208,4 +208,13 @@ def _default_transit_orbs() -> AspectOrbSet:
         },
         body_orbs=transit_body_orbs,
         aspect_body_overrides=natal.aspect_body_overrides,
+    )
+
+
+def _with_max_orb(orb_set: AspectOrbSet, max_orb: float) -> AspectOrbSet:
+    return AspectOrbSet(
+        max_orb=max_orb,
+        aspect_orbs=orb_set.aspect_orbs,
+        body_orbs=orb_set.body_orbs,
+        aspect_body_overrides=orb_set.aspect_body_overrides,
     )
