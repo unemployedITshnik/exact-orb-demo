@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 import pytest
 import swisseph as swe
 
+from exact_orb import config
 from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.runtime import ephemeris_session
 from exact_orb.engine.ephemeris.selena import SELENA_METHODS, get_selena_method
+from tests.conftest import REPO_ROOT
 from tests.fixtures.natal_1985 import BODY_IDS, REFERENCE
 from tests.fixtures.selena_1985 import DATETIME_UTC, EXPECTED_SELENA, JULIAN_DAY_UT
 from tests.helpers import angular_delta_degrees, assert_longitude_close
@@ -99,7 +101,11 @@ def test_selena_strategy_switch_changes_result() -> None:
     assert mean_chart.bodies["selena"].longitude != true_chart.bodies["selena"].longitude
 
 
-def test_project_config_selects_true_perigee() -> None:
+@pytest.mark.no_ephemeris_autoinit
+def test_project_config_selects_true_perigee(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(config.SELENA_METHOD_ENV_VAR, raising=False)
+    config.configure_ephemeris(REPO_ROOT / "ephe")
+
     chart = calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
         REFERENCE["latitude"],

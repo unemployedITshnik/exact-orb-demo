@@ -80,12 +80,14 @@ package "exact_orb.config / runtime" as runtime {
   class EphemerisConfigurationError <<Exception>>
   class EphemerisNotInitializedError <<Exception>>
   class EphemerisPathMismatchError <<Exception>>
+  class EphemerisSelenaMethodMismatchError <<Exception>>
   class EphemerisSessionRequiredError <<Exception>>
 }
 
 EphemerisConfigurationError --|> EphemerisRuntimeError
 EphemerisNotInitializedError --|> EphemerisConfigurationError
 EphemerisPathMismatchError --|> EphemerisConfigurationError
+EphemerisSelenaMethodMismatchError --|> EphemerisConfigurationError
 EphemerisSessionRequiredError --|> EphemerisRuntimeError
 _EphemerisRuntimeState *-- EphemerisStatus
 _EphemerisRuntimeState --> SelenaMethodName
