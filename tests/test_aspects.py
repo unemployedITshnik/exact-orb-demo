@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 import pytest
+from pydantic import ValidationError
 
 from exact_orb.engine.aspects import AspectCategory, AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.charts.natal import calculate_natal
@@ -70,6 +71,47 @@ EXPECTED_ASPECTS: dict[tuple[str, str, str], tuple[float, AspectCategory]] = {
     _key("moon", "sextile", "chiron"): (6.78, AspectCategory.BACKGROUND),
     _key("moon", "square", "neptune"): (6.79, AspectCategory.BACKGROUND),
 }
+
+
+@pytest.mark.parametrize("factory", [AspectConfig.natal, AspectConfig.transit])
+@pytest.mark.parametrize("invalid_max_orb", [-1.0, float("nan")])
+def test_aspect_config_factories_validate_max_orb(factory, invalid_max_orb: float) -> None:
+    with pytest.raises(ValidationError):
+        factory(max_orb=invalid_max_orb)
+
+
+@pytest.mark.parametrize(
+    ("factory", "mode", "active_name", "inactive_name"),
+    [
+        (AspectConfig.natal, "natal", "natal_orbs", "transit_orbs"),
+        (AspectConfig.transit, "transit", "transit_orbs", "natal_orbs"),
+    ],
+)
+@pytest.mark.parametrize("max_orb", [0.0, 2.5])
+def test_aspect_config_factories_replace_only_active_max_orb(
+    factory,
+    mode: str,
+    active_name: str,
+    inactive_name: str,
+    max_orb: float,
+) -> None:
+    defaults = AspectConfig(mode=mode)
+
+    config = factory(max_orb=max_orb)
+
+    active_orbs = getattr(config, active_name)
+    default_active_orbs = getattr(defaults, active_name)
+    assert config.mode == mode
+    assert active_orbs.max_orb == max_orb
+    assert active_orbs.aspect_orbs == default_active_orbs.aspect_orbs
+    assert active_orbs.body_orbs == default_active_orbs.body_orbs
+    assert active_orbs.aspect_body_overrides == default_active_orbs.aspect_body_overrides
+    assert getattr(config, inactive_name) == getattr(defaults, inactive_name)
+
+
+def test_aspect_config_factory_defaults_remain_context_specific() -> None:
+    assert AspectConfig.natal().active_orbs.max_orb == 7.0
+    assert AspectConfig.transit().active_orbs.max_orb == 6.0
 
 
 def test_natal_aspects_match_reference_without_selena() -> None:
