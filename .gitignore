@@ -6,7 +6,6 @@ __pycache__/
 .hypothesis/
 pytest-cache-files-*/
 data/ephe/
-ephe/
 # Каталог мест — производный артефакт scripts/build_place_catalog.py,
 # восстанавливается из дампа GeoNames; в репозиторий не кладётся.
 data/
