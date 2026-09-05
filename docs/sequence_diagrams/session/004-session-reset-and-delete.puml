@@ -65,7 +65,10 @@ API -> Orch : execute(command, session_id, run)
 
 Orch -> Context : clear_dialog(session_id, now)
 Context -> Dialog : clear(session_id, now)
-Dialog --> Context : ok
+activate Dialog
+Dialog -> Dialog : shared backend section:\ntouched(parent state, now)\n+ delete dialog row
+Dialog --> Context : ok; state expires_at продлён
+deactivate Dialog
 Context --> Orch : ok
 
 Orch --> API : Success(state_version не изменился)
@@ -73,9 +76,10 @@ API --> FE : ok
 FE --> User : карта на месте, лента пуста
 
 note over Context, Store
-SessionState не трогается вообще: CAS не выполняется,
-state_version остаётся прежним. Операция, начатая
-до очистки, ничего не теряет.
+CAS не выполняется; version, birth data и chart
+остаются прежними. Успешный clear считается
+активностью и может продлить expires_at state,
+а dialog становится пустым в той же backend-секции.
 end note
 
 

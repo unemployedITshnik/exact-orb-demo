@@ -2,7 +2,8 @@
 
 Дата: 2026-09-04. Ревизия: 2026-09-05 — уточнены агрегатные операции
 `SessionPersistence`, обязательные `BEGIN IMMEDIATE` и version guard с
-проверкой `rowcount`; ограничена интерпретация раннего микробенчмарка.
+проверкой `rowcount`; append/clear закреплены как атомарные write-and-renew;
+ограничена интерпретация раннего микробенчмарка.
 Статус: принято.
 
 ## Контекст
@@ -72,6 +73,15 @@ CAS после успешного guarded update (`rowcount == 1`) удаляе�
 `StateWriteError`. `delete` атомарно удаляет обе записи. Координация двух отдельных
 фасетных вызовов этому контракту не соответствует.
 
+**Dialog write-and-renew.** `DialogStore.append` и `DialogStore.clear`
+каждый выполняются в одной `BEGIN IMMEDIATE … COMMIT` вместе с продлением
+parent state. Append сохраняет ограниченный dialog с тем же persisted
+deadline; clear продлевает state и удаляет dialog. Предметные поля state и
+`state_version` не меняются, а частичное изменение state/dialog недопустимо.
+Parent `SessionState` остаётся единственным источником
+live/missing/expired; persisted dialog deadline нужен согласованному
+lifecycle и reaper, но не является независимым liveness-предикатом.
+
 **TTL.** Колонка `expires_at`, проверка при чтении и периодическая чистка.
 Встроенного TTL у SQLite нет, reaper писать придётся — это цена решения.
 
@@ -108,7 +118,8 @@ CAS после успешного guarded update (`rowcount == 1`) удаляе�
 P4 обязан измерить публичный порт на file-backed базе с фактическими WAL и
 `synchronous`, сериализацией, commit и тем же способом thread offload, что
 используется приложением. Отдельно фиксируются p50/p95 для успешного CAS,
-конфликта, aggregate touch/reset/delete и конкурирующих писателей.
+конфликта, append/clear, aggregate touch/reset/delete и конкурирующих
+писателей. Показатели bare SQL нельзя приписывать полному adapter path.
 
 ### Условие перехода на PostgreSQL
 

@@ -47,6 +47,12 @@ SESSION_CONTRACT_MODULES: tuple[str, ...] = (
     "exact_orb.session.persistence",
 )
 
+SESSION_ADAPTER_MODULES: tuple[str, ...] = (
+    "exact_orb.session.adapters",
+    "exact_orb.session.adapters._time",
+    "exact_orb.session.adapters.in_memory",
+)
+
 SESSION_ALLOWED_PROJECT_IMPORTS: tuple[str, ...] = (
     "exact_orb.session.",
     "exact_orb.birth.types",
@@ -54,6 +60,7 @@ SESSION_ALLOWED_PROJECT_IMPORTS: tuple[str, ...] = (
 )
 
 SESSION_FORBIDDEN_AT_RUNTIME: tuple[str, ...] = (
+    "exact_orb.session.adapters",
     "swisseph",
     "sqlite3",
     "aiosqlite",
@@ -71,6 +78,30 @@ SESSION_FORBIDDEN_AT_RUNTIME: tuple[str, ...] = (
     "exact_orb.tools",
     "exact_orb.llm",
     "exact_orb.cli",
+)
+
+SESSION_ADAPTER_FORBIDDEN_AT_RUNTIME: tuple[str, ...] = tuple(
+    module
+    for module in SESSION_FORBIDDEN_AT_RUNTIME
+    if module != "exact_orb.session.adapters"
+)
+
+SESSION_ADAPTER_FORBIDDEN_IMPORTS: tuple[str, ...] = (
+    "os",
+    "random",
+    "time",
+    "uuid",
+    "exact_orb.birth",
+    "exact_orb.calculation",
+    "exact_orb.config",
+    "exact_orb.application",
+    "exact_orb.agent",
+    "exact_orb.orchestration",
+    "exact_orb.tools",
+    "exact_orb.llm",
+    "exact_orb.cli",
+    "exact_orb.engine",
+    "exact_orb.swiss_backend",
 )
 
 
@@ -209,6 +240,14 @@ def _session_contract_source_files() -> list[Path]:
         path
         for path in _iter_source_files()
         if _module_name(path) in SESSION_CONTRACT_MODULES
+    ]
+
+
+def _session_adapter_source_files() -> list[Path]:
+    return [
+        path
+        for path in _iter_source_files()
+        if _module_name(path) in SESSION_ADAPTER_MODULES
     ]
 
 
@@ -364,6 +403,63 @@ def test_session_outcomes_do_not_declare_dialog_import() -> None:
     ), "session.outcomes must not import session.dialog"
 
 
+def test_session_adapter_source_files_are_discovered() -> None:
+    modules = {_module_name(path) for path in _session_adapter_source_files()}
+
+    assert modules == set(SESSION_ADAPTER_MODULES)
+
+
+def test_session_adapters_only_import_session_project_modules() -> None:
+    violations = sorted(
+        {
+            f"{_module_name(path)} -> {imported}"
+            for path in _session_adapter_source_files()
+            for imported in _declared_imports(path)
+            if imported.startswith("exact_orb.")
+            and not (
+                imported == "exact_orb.session"
+                or imported.startswith("exact_orb.session.")
+            )
+        }
+    )
+
+    assert not violations, "session adapters импортируют вне allowlist:\n" + "\n".join(
+        violations
+    )
+
+
+def test_session_adapters_declare_no_hidden_time_id_or_edge_imports() -> None:
+    violations = sorted(
+        {
+            f"{_module_name(path)} -> {forbidden}"
+            for path in _session_adapter_source_files()
+            for imported in _declared_imports(path)
+            for forbidden in SESSION_ADAPTER_FORBIDDEN_IMPORTS
+            if _violates(imported, forbidden)
+        }
+    )
+
+    assert not violations, "session adapters импортируют запрещённое:\n" + "\n".join(
+        violations
+    )
+
+
+def test_session_adapters_do_not_read_wall_or_monotonic_time() -> None:
+    violations = sorted(
+        f"{_module_name(path)} -> {call}"
+        for path in _session_adapter_source_files()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"now", "utcnow", "time", "monotonic"}
+        for call in (ast.unparse(node.func),)
+    )
+
+    assert not violations, "session adapters читают скрытое время:\n" + "\n".join(
+        violations
+    )
+
+
 def test_session_package_import_keeps_runtime_and_edge_modules_out() -> None:
     """A clean package import exposes the API without loading implementations."""
 
@@ -414,6 +510,51 @@ def test_session_package_import_keeps_runtime_and_edge_modules_out() -> None:
     assert not result["found"], (
         "package import транзитивно загрузил запрещённое: "
         + ", ".join(result["found"])
+    )
+
+
+def test_session_adapters_import_cleanly_with_positive_controls() -> None:
+    script = "\n".join(
+        (
+            "import importlib, json, sys",
+            "package = importlib.import_module('exact_orb.session.adapters')",
+            "time_module = importlib.import_module('exact_orb.session.adapters._time')",
+            "in_memory = importlib.import_module('exact_orb.session.adapters.in_memory')",
+            "required = ['InMemorySessionStore', 'InMemoryDialogStore', 'InMemorySessionPersistence']",
+            f"forbidden = {list(SESSION_ADAPTER_FORBIDDEN_AT_RUNTIME)!r}",
+            "missing = sorted(name for name in required if not hasattr(package, name))",
+            "positive = hasattr(time_module, '_validate_now') and all(hasattr(in_memory, name) for name in required)",
+            "found = sorted(",
+            "    name",
+            "    for name in sys.modules",
+            "    for bad in forbidden",
+            "    if name == bad or name.startswith(bad + '.')",
+            ")",
+            "print(json.dumps({'missing': missing, 'positive': positive, 'found': found}))",
+        )
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC_ROOT)
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, (
+        "импорт session adapters завершился ошибкой:\n" + completed.stderr
+    )
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["positive"], "positive control не импортировал adapter symbols"
+    assert not result["missing"], "adapter package API неполон: " + ", ".join(
+        result["missing"]
+    )
+    assert not result["found"], "adapter import загрузил запрещённое: " + ", ".join(
+        result["found"]
     )
 
 

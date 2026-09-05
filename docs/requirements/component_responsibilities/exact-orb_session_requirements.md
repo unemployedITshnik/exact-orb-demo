@@ -239,10 +239,11 @@ class DialogStore(Protocol):
 ```
 
 **Атомарность.** `append` выполняется хранилищем как одна операция вместе с
-вытеснением по числу ходов. Реализация через чтение, изменение и запись в
-коде приложения недопустима: две вкладки, дописывающие ходы одновременно,
-потеряют один. CAS здесь не нужен — добавление хода ни с чем не конфликтует
-по смыслу, нужна только атомарность самого добавления.
+вытеснением по числу ходов и продлением parent state. Реализация через
+чтение, изменение и запись в коде приложения недопустима: две вкладки,
+дописывающие ходы одновременно, потеряют один. CAS здесь не нужен —
+добавление хода ни с чем не конфликтует по смыслу, нужна только атомарность
+самого добавления и write-and-renew обеих записей.
 
 **Пределы диалога**, действующие одновременно:
 
@@ -259,17 +260,31 @@ class DialogStore(Protocol):
 подменяет признак усечения. Поэтому сочетания `complete + truncated` и
 `partial + truncated` корректны.
 
+`append` не идемпотентен: повторный `turn_id` сохраняется ещё одним ходом и
+остаётся correlation/UI metadata, а не ключом хранения. Поле
+`state_version_at_answer` — историческая метка, не CAS-предикат: store не
+сверяет его с текущей версией и сохраняет без изменения как меньший, так и
+больший marker. Порядок ходов определяется успешными append, а не
+`created_at`.
+
 Обоснование чисел: ответ preset-интерпретации ограничен сверху `max_tokens`
 (ADR-0013), кириллица занимает два-три символа на токен, поэтому типичный
 ход укладывается в три-четыре тысячи символов. Предел 8 000 даёт двукратный
 запас. Потолок 120 000 символов — около 240 КБ в UTF-8.
 
 **TTL синхронизирован с сессией.** Фасетные `SessionStore.get` и
-`DialogStore.read` ничего не продлевают. Операция агрегата
-`SessionPersistence.touch` продлевает обе записи одним моментом `now` и
-возвращает согласованный `SessionSnapshot`. Расхождение допустимо только в одну сторону:
-сессия есть, диалога нет — это пустой диалог, не ошибка. Обратное —
-осиротевшие персональные данные, и оно исключается порядком удаления (§5.3).
+`DialogStore.read` ничего не продлевают. `SessionPersistence.touch` —
+единственный read-and-renew. Успешные CAS, append и clear являются
+write-and-renew: append продлевает parent state и dialog одним deadline;
+clear продлевает state, удаляет dialog и не меняет предметные поля или
+`state_version`. Расхождение допустимо только в одну сторону: сессия есть,
+диалога нет — это пустой диалог, не ошибка. Обратное — осиротевшие
+персональные данные, и оно исключается порядком удаления (§5.3).
+
+Private `_DialogRecord.expires_at` в InMemory хранится для изоморфизма с
+SQLite и будущего reaper, но не читается публичными операциями и не является
+вторым источником liveness: live/missing/expired всегда определяется только
+по parent `SessionState`.
 
 ### 3.3. `SessionStore` — `session/store.py`
 
@@ -380,16 +395,22 @@ I/O, хранилища и `asyncio`; атомарность инкремент�
 
 ### 4.1. TTL
 
-- **sliding TTL — 7 дней.** Продлевается явным агрегатным `touch` при входе
-  в пользовательскую операцию и переходом состояния при успешном CAS.
+- **sliding TTL — 7 дней.** Продлевается агрегатным `touch` при согласованном
+  чтении и write-and-renew операциями: успешными CAS, append и clear.
 - **абсолютный потолок — 30 дней** от `created_at`, независимо от
   активности. По его достижении сессия удаляется, продление невозможно.
 
 Read-and-renew применяется **к обеим записям** — состоянию и диалогу — одной
 операцией `SessionPersistence.touch`. `SessionStore.get` и
-`DialogStore.read` read-only и сами TTL не меняют. Иначе обычное чтение
-скрыто мутирует состояние, а два отдельных `touch` оставляют окно частичного
-продления.
+`DialogStore.read` read-only и сами TTL не меняют. Write-and-renew CAS и
+append синхронизируют deadlines существующих state/dialog, а clear продлевает
+state и удаляет dialog. Любое продление ограничено `hard_expires_at`.
+
+Каждый port-параметр `now` обязан быть timezone-aware с UTC offset `0`.
+InMemory и SQLite используют один validator
+`exact_orb.session.adapters._time`: невалидное время даёт обычный
+`ValueError` до storage lookup и до любой мутации. `delete` времени не
+принимает.
 
 Абсолютный потолок нужен затем, что бесконечно продлеваемое окно
 противоречит privacy-модели ADR-0010: данные рождения не должны жить в
@@ -409,6 +430,13 @@ Read-and-renew применяется **к обеим записям** — со�
 непригодную cookie, генерирует свежий серверный `session_id` и вызывает
 `SessionStore.create`. Коллизия даёт `SessionIdConflict` и требует ещё одного
 свежего идентификатора, а не чтения или перезаписи чужой записи.
+
+Истечение на границе порта логическое: `now >= expires_at` или
+`now >= hard_expires_at` немедленно даёт `SessionAbsent("expired")`, и
+`ExpiredSessionTransitionError` из чистых функций наружу persistence не
+выходит. InMemory P2 физически запись не удаляет; SQLite P4 удалит её reaper.
+После purge тот же ID наблюдается как `not_found`, поскольку tombstone не
+хранится.
 
 ### 4.3. Восстановление при возврате
 
@@ -460,8 +488,9 @@ cookie и передаёт `ContextService` как доверенный конт
 ResetSessionCommand { scope: Literal["dialog", "all"] }
 ```
 
-- `scope="dialog"` — `DialogStore.clear`; карта и данные рождения остаются,
-  `state_version` не меняется: состояние не тронуто;
+- `scope="dialog"` — `DialogStore.clear`; карта, данные рождения и
+  `state_version` не меняются, но успешный clear считается активностью и
+  может продлить `expires_at` state;
 - `scope="all"` — только `SessionPersistence.reset(session_id,
   expected_state_version, now=now)`: агрегат делегирует `RESET_DELTA` тому же
   фасетному CAS, который атомарно меняет state и очищает dialog; сессия и её
@@ -705,6 +734,11 @@ async def compare_and_set(...) -> int | VersionConflict(actual: SessionState)
 состояние после конфликта, не подменяет expected свежей версией и не повторяет
 CAS автоматически.
 
+Store вправе вернуть `VersionConflict(actual)` с `actual.state_version == 0`,
+например если вызывающий передал expected `1` для свежей сессии. Поскольку
+`AlreadyApplied.state_version >= 1`, P3 обязан классифицировать этот случай
+тотально и не конструировать `AlreadyApplied(0)` автоматически.
+
 ---
 
 ## 8. Отказы хранилища
@@ -886,6 +920,13 @@ ADR-0013 называл кэш интерпретаций вторым уров�
 `SessionPersistence` и `CalculationCache` остаются теми же `Protocol`. Это и
 есть то, ради чего порт вводился (`build_natal_components.md` §1.3.3).
 
+Поддерживаемая composition root процессной ступени —
+`InMemorySessionPersistence()`. Aggregate создаёт один private backend с
+одним `asyncio.Lock` и отдаёт стабильные facets `.sessions` и `.dialogs` над
+ним; zero-argument создание отдельных facet не поддерживается. Два aggregate
+полностью изолированы. Все now-bearing методы InMemory, а в P4 и SQLite,
+используют один private validator `session/adapters/_time.py`.
+
 ### 12.3. SQLite закрывает все хранилища
 
 **CAS.** Запись выполняется внутри `BEGIN IMMEDIATE`. Precheck читает
@@ -905,6 +946,13 @@ guarded CAS с `RESET_DELTA`; RESET_DELTA-aware CAS очищает диалог 
 `rowcount == 1` и в той же транзакции. Неединичный `rowcount` откатывает всю
 операцию как `StateWriteError`. `delete` удаляет обе строки атомарно
 (§5.3).
+
+**Dialog write-and-renew.** `append` и `clear` каждый выполняются в одной
+`BEGIN IMMEDIATE … COMMIT` вместе с продлением parent state. Append сохраняет
+dialog с тем же deadline; clear продлевает state и удаляет dialog, не меняя
+предметные поля или `state_version`. Частичное изменение state/dialog
+недопустимо; liveness определяется только parent state, а persisted dialog
+deadline нужен reaper.
 
 **TTL.** Колонка `expires_at`, проверка при чтении и периодическая чистка.
 Встроенного TTL у SQLite нет, reaper писать придётся.
@@ -1062,7 +1110,11 @@ VersionConflict, aggregate touch/reset/delete и конкурирующих пи
 **Диалог**
 
 - добавление хода не меняет `state_version` и не вызывает CAS;
+- append продлевает state и dialog одним deadline, а clear продлевает state
+  и очищает dialog; оба сохраняют предметное state и `state_version`;
 - два одновременных `append` сохраняют оба хода;
+- повторный `turn_id` сохраняется вторым ходом, а
+  `state_version_at_answer` не валидируется относительно текущей версии;
 - построение карты не переписывает диалог;
 - диалог не превышает 50 ходов, 8 000 символов на ход и 120 000 символов
   суммарно; вытеснение идёт с самых старых;
@@ -1077,7 +1129,12 @@ VersionConflict, aggregate touch/reset/delete и конкурирующих пи
 - фасетные `get` и `read` read-only;
 - агрегатный `touch` одним `now` продлевает обе записи и возвращает
   согласованный frozen `SessionSnapshot`;
-- достижение `hard_expires_at` удаляет сессию независимо от активности;
+- CAS, append, clear и touch не укорачивают TTL и не проходят
+  `hard_expires_at`;
+- достижение `hard_expires_at` делает сессию логически недоступной независимо
+  от активности; физическую очистку выполняет SQLite reaper;
+- невалидный port-параметр `now` даёт `ValueError` до lookup/mutation;
+- `ExpiredSessionTransitionError` не пересекает persistence boundary;
 - `session_expired` и `session_not_found` различимы в метриках и
   неразличимы в ответе пользователю;
 - `DeleteMyDataCommand` гасит cookie и удаляет обе записи; последующий
@@ -1095,7 +1152,8 @@ VersionConflict, aggregate touch/reset/delete и конкурирующих пи
 - превышение лимита построений даёт типизированный отказ, а не расчёт;
 - состояние и диалог переживают рестарт процесса на реализации `Sqlite*`;
 - обе реализации, `InMemory*` и `Sqlite*`, проходят один conformance-набор
-  фасетных портов и `SessionPersistence` (тесты параметризованы реализацией).
+  фасетных портов и `SessionPersistence` через обязательный factory seam
+  (тесты параметризованы реализацией).
 
 **Приватность**
 

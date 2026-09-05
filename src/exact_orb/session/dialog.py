@@ -83,7 +83,7 @@ class DialogStore(Protocol):
         *,
         now: datetime,
     ) -> None | SessionAbsent:
-        """Atomically append to a live dialog or raise ``StateWriteError``."""
+        """Atomically append and renew a live lifecycle or raise ``StateWriteError``."""
 
         ...
 
@@ -103,7 +103,7 @@ class DialogStore(Protocol):
         *,
         now: datetime,
     ) -> None | SessionAbsent:
-        """Idempotently clear a live dialog or raise ``StateWriteError``."""
+        """Atomically clear and renew a live lifecycle or raise ``StateWriteError``."""
 
         ...
 

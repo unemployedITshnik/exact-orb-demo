@@ -55,3 +55,17 @@
   для времени возникает штатно. Ошибки схемы уходят наружу тем же контрактом.
 * **0008** — подставленный полдень не порождает вопросов пользователю
   даже при попадании в аномалию часового пояса.
+
+## Ревизии 2026-09-05
+
+Реализация процессного session persistence уточнила границы уже принятых
+lifecycle-решений:
+
+* **0009** — `touch` остаётся единственным read-and-renew; фасетные
+  `get`/`read` read-only, а успешные CAS/append/clear являются
+  write-and-renew. Append продлевает state и dialog одним deadline, clear
+  продлевает state без изменения content/version и удаляет dialog.
+* **0024** — SQLite append/clear обязаны выполнять то же изменение одной
+  `BEGIN IMMEDIATE … COMMIT`; parent state является единственным источником
+  liveness, а persisted dialog deadline используется согласованным lifecycle
+  и reaper.

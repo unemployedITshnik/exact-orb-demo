@@ -11,8 +11,9 @@ TTL, `DeleteMyDataCommand` гасит cookie, `ProfileService` как отдел
 Ревизия: 2026-09-05 — уточнена граница persistence: фасетные чтения
 read-only, согласованный read-and-renew выполняет агрегатный `touch` с
 `SessionSnapshot`; reset/delete атомарны между состоянием и диалогом;
-`session_id` создаётся только доверенным серверным генератором, а cookie
-используется только для поиска.
+успешные CAS/append/clear являются write-and-renew; `session_id` создаётся
+только доверенным серверным генератором, а cookie используется только для
+поиска.
 Статус: принято.
 
 ## Контекст
@@ -62,7 +63,11 @@ SessionState {
 Хранилища живут по одному TTL. Фасетные `SessionStore.get` и
 `DialogStore.read` read-only; согласованный read-and-renew выполняет только
 `SessionPersistence.touch`, который продлевает обе записи одним моментом и
-возвращает frozen `SessionSnapshot { state, dialog }`.
+возвращает frozen `SessionSnapshot { state, dialog }`. Успешные
+`SessionStore.compare_and_set`, `DialogStore.append` и `DialogStore.clear`
+являются write-and-renew: append продлевает parent state и сохраняет dialog
+с тем же deadline, а clear продлевает parent state и удаляет dialog. Append
+и clear не меняют предметные поля state и `state_version`.
 
 Хранятся оба представления данных рождения: только `birth_input` означал бы,
 что обновление `tzdata` молча сдвинет карту; только `birth_resolved` — что нечего
@@ -81,9 +86,10 @@ SessionState {
 (ADR-0014); отдельный владелец инкремента не нужен. Handler получает дельту
 и возвращает её оркестратору.
 
-**TTL двухуровневый.** Скользящий — 7 дней; при входе в пользовательскую
-операцию обе записи продлеваются агрегатным `touch`, а успешный переход
-состояния применяет то же правило с переданным `now`.
+**TTL двухуровневый.** Скользящий — 7 дней; согласованное чтение продлевает
+обе записи агрегатным `touch`, а успешные CAS, append и clear применяют то же
+правило с переданным `now`. Append обновляет обе записи одним deadline;
+clear обновляет state deadline и удаляет dialog.
 Абсолютный потолок — 30 дней от `created_at`, независимо от активности; по
 его достижении сессия удаляется, продление невозможно. Потолок нужен
 затем, что бесконечно продлеваемое окно противоречит privacy-модели
@@ -123,6 +129,9 @@ SessionState {
 - В пределах сессии пользователь не повторяет исходные данные.
 - Read-only фасеты не продлевают TTL скрыто; агрегатный `touch` продлевает
   состояние и диалог вместе **в пределах абсолютного потолка**.
+- Успешные CAS, append и clear являются write-and-renew; append сохраняет
+  одинаковый deadline обеих записей, а clear продлевает state и очищает
+  dialog без изменения предметного state или `state_version`.
 - Межзаписные reset/delete являются атомарными операциями
   `SessionPersistence`, а не координацией двух независимых портов в
   application-коде.

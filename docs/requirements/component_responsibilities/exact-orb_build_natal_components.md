@@ -150,6 +150,8 @@ src/exact_orb/
         persistence.py          SessionSnapshot, SessionPersistence (Protocol)
         context.py              ContextService (P3)
         adapters/
+            __init__.py         public concrete adapter exports
+            _time.py            единая private UTC-валидация now для P2/P4
             in_memory.py        P2
             sqlite.py           P4
 
@@ -1182,7 +1184,10 @@ class SessionStore(Protocol):
 `DialogStore` атомарно append/read/clear отдельной записи диалога. Его
 `read` read-only; `append` применяет пределы 50 ходов, 8 000 символов на ход
 и 120 000 суммарно. Усечение выставляет `truncated=True`, не меняя
-`status="complete" | "partial"`.
+`status="complete" | "partial"`. Успешные append и clear являются
+write-and-renew: append продлевает parent state и dialog одним deadline,
+clear продлевает state и удаляет dialog. Предметные поля state и
+`state_version` при этом не меняются.
 
 ```text
 @runtime_checkable
@@ -1223,6 +1228,17 @@ now=now)`: агрегат только делегирует, а RESET_DELTA-awar
 очищает диалог внутри своей backend-секции. `delete`
 атомарно удаляет обе записи. Реализация через два независимых вызова фасетов
 недопустима.
+
+Поддерживаемая InMemory-композиция — `InMemorySessionPersistence()`, который
+владеет одним private backend и одним `asyncio.Lock`, а стабильные
+`.sessions`/`.dialogs` создаёт над ними. Отдельные facet требуют backend
+позиционно и не создаются без аргумента. Parent `SessionState` — единственный
+источник liveness; private dialog deadline в P2 хранится, но не читается.
+
+Все now-bearing методы InMemory и будущего SQLite используют один private
+validator `session/adapters/_time.py`. Он требует aware UTC offset `0` и
+возвращает `ValueError` до lookup/mutation; скрытых clock/config источников у
+адаптеров нет.
 
 Чистые `new_session`, `apply_delta`, `touched`, `is_expired` и
 `matches_intent` живут в `session/state.py`; отдельный `ProfileService` не

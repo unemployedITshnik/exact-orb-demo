@@ -7,6 +7,11 @@ TTL-сессии, а не пользовательский профиль. От�
 возвращает frozen `SessionSnapshot { state, dialog }` через агрегат
 `SessionPersistence`; фасетные `get`/`read` read-only.
 
+Успешные CAS, append и clear являются write-and-renew. Append продлевает
+parent state и dialog одним deadline; clear продлевает state и очищает
+dialog, сохраняя предметные поля и `state_version`. `touch` остаётся
+единственным read-and-renew.
+
 В `SessionState` нет полной карты и `calculation_key`. Он хранит
 пользовательский ввод, разрешённые данные рождения, ссылку на текущую
 натальную карту и версию состояния. Полный `ChartArtifact` принадлежит
