@@ -1,0 +1,135 @@
+@startuml
+title exact-orb — Session: отказ хранилища на чтении против пустой сессии
+
+' N8 описывает отказ при записи. Этот случай — отказ при ЧТЕНИИ,
+' и он опаснее: "не смог ответить" легко перепутать с "пусто",
+' а цена ошибки несимметрична.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "1. CLIENT" #DBEAFE
+    boundary "Frontend" as FE
+end box
+
+box "2. API / APPLICATION" #FFEDD5
+    boundary "API" as API
+    control "ApplicationOrchestrator" as Orch
+end box
+
+box "3. SESSION" #D1FAE5
+    control "ContextService" as Context
+    control "SessionPersistence" as Persistence
+    database "SessionStore" as Store
+end box
+
+
+== Хранилище не отвечает ==
+
+User -> FE : открывает приложение
+FE -> API : RestoreSessionQuery + HttpOnly cookie
+API -> API : lookup session_id только из cookie
+API -> Orch : execute(query, session_id, run)
+
+Orch -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now)
+activate Persistence
+Persistence --> Context : StateReadError(error_code)
+deactivate Persistence
+
+note right of Store
+Это **не** "пусто". Это "не смог ответить".
+Запись, скорее всего, цела и лежит на месте.
+end note
+
+Context -> Context : отказ чтения != SessionAbsent
+Context --> Orch : StateReadFailed(error_code)
+
+Orch --> API : StateReadFailed(error_code)
+API --> FE : 503
+FE -> FE : "сервис временно недоступен,\n обновите страницу"
+FE --> User : карта не тронута, ждём
+
+note over FE, Store
+Отвергнутая альтернатива: трактовать отказ
+как отсутствие сессии и показать пустую форму.
+
+Тогда пользователь строит карту заново,
+хранилище оживает — а в нём лежала целая карта,
+которую только что перезаписали.
+Данные были в порядке; потеряли их мы.
+end note
+
+
+== Повторная попытка после неподтверждённого commit ==
+
+note over Orch, Store
+Предыстория: расчёт прошёл, но commit не подтвердился
+(N8, StateCommitFailed(error_code)). Фактический исход неизвестен:
+запись могла пройти и потеряться в ответе, а могла
+не пройти вовсе. Сохранены delta и original expected=5.
+end note
+
+User -> FE : «Повторить»
+FE -> API : BuildNatalCommand(тот же birth_input)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Orch : Calculation Cache hit;\nне менять original expected=5
+Orch -> Context : save(delta, expected=5, now)
+Context -> Store : compare_and_set(expected=5, delta, now)
+
+alt прошлый commit не состоялся
+    Store --> Context : 6
+    Context --> Orch : Committed(6)
+else прошлый commit состоялся
+    Store --> Context : VersionConflict(actual version=6)
+    Context -> Context : matches_intent(actual, delta) == true
+    Context --> Orch : AlreadyApplied(6)
+else победило другое намерение
+    Store --> Context : VersionConflict(actual)
+    Context -> Context : matches_intent(actual, delta) == false
+    Context --> Orch : Superseded(actual)
+else write снова не подтверждён
+    Store --> Context : StateWriteError(error_code)
+    Context --> Orch : StateCommitFailed(error_code)
+end
+
+note over Context, Store
+ContextService не делает get после конфликта:
+actual получен из атомарного CAS. Retry не
+перебазируется на свежую версию и не выполняется
+сервисом скрыто. Поэтому N7 и N8 используют один
+механизм, а последовательный retry меняет версию
+не более чем на +1 суммарно.
+end note
+
+@enduml

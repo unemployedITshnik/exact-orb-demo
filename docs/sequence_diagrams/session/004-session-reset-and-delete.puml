@@ -1,0 +1,167 @@
+@startuml
+title exact-orb — Session: очистка диалога, сброс данных, удаление
+
+' Три сценария, которые пользователь легко путает, а система
+' обязана различать: они по-разному влияют на cookie и лимиты.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "1. CLIENT" #DBEAFE
+    boundary "Frontend" as FE
+end box
+
+box "2. API / APPLICATION" #FFEDD5
+    boundary "API" as API
+    control "ApplicationOrchestrator" as Orch
+end box
+
+box "3. SESSION" #D1FAE5
+    control "ContextService" as Context
+    control "SessionPersistence" as Persistence
+    database "SessionStore" as Store
+    database "DialogStore" as Dialog
+end box
+
+box "4. RESEARCH" #EDE9FE
+    database "ResearchCorpus" as Research
+end box
+
+
+== 1. Очистить диалог ==
+
+User -> FE : «Очистить переписку»
+FE -> API : ResetSessionCommand(scope = dialog)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : clear_dialog(session_id, now)
+Context -> Dialog : clear(session_id, now)
+Dialog --> Context : ok
+Context --> Orch : ok
+
+Orch --> API : Success(state_version не изменился)
+API --> FE : ok
+FE --> User : карта на месте, лента пуста
+
+note over Context, Store
+SessionState не трогается вообще: CAS не выполняется,
+state_version остаётся прежним. Операция, начатая
+до очистки, ничего не теряет.
+end note
+
+
+== 2. Построить карту другому человеку ==
+
+User -> FE : «Начать заново»
+FE -> API : ResetSessionCommand(scope = all)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : reset_all(session_id,\n original expected_version = 4, now)
+Context -> Persistence : reset(session_id, expected=4, now)
+activate Persistence
+Persistence -> Store : compare_and_set(4, RESET_DELTA, now)
+activate Store
+Store -> Store : RESET_DELTA-aware CAS:\nstate version=5 + clear dialog\nв одной backend-секции
+Store --> Persistence : 5
+deactivate Store
+Persistence --> Context : 5
+deactivate Persistence
+Context --> Orch : Committed(state_version = 5)
+
+Orch --> API : Success(state_version = 5)
+API --> FE : пустое состояние
+FE -> FE : показывает форму данных рождения
+FE --> User : та же сессия, данных нет
+
+note over Store
+state_version **инкрементируется**, а не обнуляется.
+При сбросе в ноль незавершённая операция
+с expected_state_version = 0 прошла бы CAS
+и записала старую карту в очищенную сессию.
+end note
+
+note over Persistence, Dialog
+reset — не второй алгоритм: Persistence только
+делегирует SessionStore.compare_and_set с
+RESET_DELTA. RESET_DELTA-aware facet CAS сам
+очищает dialog внутри backend-секции. При
+VersionConflict, SessionAbsent или StateWriteError(error_code)
+частично сброшенного агрегата нет.
+end note
+
+
+== 3. Удалить мои данные ==
+
+User -> FE : «Удалить мои данные»
+FE -> API : DeleteMyDataCommand
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : delete(session_id)
+Context -> Persistence : delete(session_id)
+activate Persistence
+Persistence -> Dialog : удалить dialog
+Persistence -> Store : удалить state\nв той же атомарной секции
+Persistence --> Context : ok
+deactivate Persistence
+Context --> Orch : Deleted
+
+Orch --> API : Deleted
+API --> FE : Set-Cookie с истёкшим сроком
+FE -> FE : очищает локальное состояние
+FE --> User : «Данные рождения и переписка удалены.\n Обезличенная статистика качества ответов —\n без даты, времени и места рождения —\n сохраняется для улучшения сервиса.»
+
+note over Persistence, Store
+Два последовательных вызова фасетов не являются
+реализацией delete. InMemory использует один lock,
+SQLite — одну BEGIN IMMEDIATE transaction: наружу
+не наблюдается частично удалённый агрегат.
+end note
+
+Orch -[#94A3B8]-> Research : ничего не удаляет
+note right of Research
+ResearchRecord создан в момент ответа и с личностью
+не связан: только категориальные признаки карты —
+знак, дом, тип аспекта. Ни birth_input, ни координат,
+ни точного времени, ни calculation_key там нет,
+поэтому удалять нечего.
+end note
+
+note over FE, Store
+Следующий запрос приходит без валидной cookie,
+transport генерирует новый server session_id и
+insert-only создаёт новую сессию. Старый ID не
+переиспользуется. Лимиты сбрасываются —
+это допустимо: защитой от злоупотребления служат
+IP-лимит и дневной потолок (ADR-0009, ADR-0013).
+end note
+
+@enduml

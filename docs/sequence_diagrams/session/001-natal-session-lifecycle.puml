@@ -1,0 +1,288 @@
+@startuml
+title exact-orb — Session: построение → интерпретация → явное перестроение
+
+' Упрощённая модель MVP:
+' - SessionState — состояние сессии; ходы диалога хранятся отдельной
+'   записью через DialogStore с тем же TTL;
+' - полной карты в SessionState нет;
+' - изменение данных рождения возможно только явной командой из формы.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+actor "Пользователь" as User
+
+box "1. CLIENT" #DBEAFE
+    boundary "Frontend" as FE
+end box
+
+box "2. API / APPLICATION" #FFEDD5
+    boundary "API" as API
+    control "ApplicationOrchestrator" as Orch
+    control "BuildNatalHandler" as Build
+    control "InterpretSelectionHandler" as Selection
+end box
+
+box "3. SESSION" #D1FAE5
+    control "ContextService" as Context
+    control "SessionPersistence" as Persistence
+    database "SessionStore" as Store
+    database "DialogStore" as Dialog
+end box
+
+box "4. NATAL" #E8F5E9
+    control "BirthDataResolver" as Birth
+    control "ChartArtifactResolver" as Artifacts
+end box
+
+box "5. INTERPRETATION" #EDE9FE
+    control "AgentRuntime" as Agent
+    control "ensure_natal\n(agent tool)" as EnsureNatal
+    control "InterpretationService" as Interpretation
+end box
+
+
+== 1. Первая карта обязательна ==
+
+User -> FE : открывает приложение
+FE -> FE : показывает форму данных рождения
+FE -> FE : карта и диалог недоступны
+FE -> API : bootstrap (cookie отсутствует)
+API -> API : сгенерировать свежий server session_id
+API -> Context : create(session_id, now)
+Context -> Store : create(session_id, now)
+Store --> Context : SessionCreated(state_version = 0)
+Context --> API : SessionCreated
+API --> FE : Set-Cookie(HttpOnly, Secure, SameSite)
+
+note over FE, Store
+session_id не приходит из body/query/path.
+Cookie используется только для lookup.
+При SessionIdConflict transport генерирует
+новый ID; существующая запись не читается
+и не перезаписывается.
+end note
+
+User -> FE : вводит дату, время и город
+User -> FE : нажимает «Построить карту»
+FE -> API : BuildNatalCommand(birth_input)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now)
+Persistence --> Context : SessionSnapshot(state_version = 0,
+dialog = ())
+Context --> Orch : SessionSnapshot
+
+Orch -> Build : handle(command, empty state_version=0, run)
+activate Build
+Build -> Birth : resolve(birth_input)
+Birth --> Build : ResolvedBirthData
+Build -> Artifacts : ensure_chart(resolved, natal_spec, run)
+Artifacts --> Build : ChartArtifact
+Build -> Build : подготовить StateDelta(\n birth_input, resolved, natal_spec)
+Build --> Orch : BuildNatalSuccess(artifact, delta)
+deactivate Build
+
+Orch -> Context : save(session_id, original expected=0, delta)
+Context -> Store : compare_and_set(expected_version=0, delta, now)
+Store -> Store : применить delta и назначить version=1\nв атомарной CAS-секции
+Store --> Context : 1
+Context --> Orch : Committed(state_version=1)
+
+Orch --> API : Success(chart, state_version=1)
+API --> FE : Chart DTO
+FE -> FE : показывает значения карты
+FE -> FE : разблокирует диалог
+FE --> User : карта и интерпретация доступны
+
+note over FE, Store
+Карта становится текущей только после
+успешного сохранения SessionState.
+
+До этого Frontend не отправляет запрос
+на интерпретацию, а backend всё равно
+проверяет наличие base_chart.
+end note
+
+note over Context, Artifacts
+SessionState хранит только состояние выбора:
+birth_input + birth_resolved + base_chart(spec)
++ state_version.
+
+Ходы диалога лежат отдельной записью
+в DialogStore: иначе каждая запись карты
+через CAS переписывала бы весь диалог,
+а добавление хода конкурировало бы
+с изменением карты за одну версию.
+
+Полный ChartArtifact и calculation_key
+принадлежат артефактному слою.
+end note
+
+
+== 2. Интерпретация текущей карты ==
+
+User -> FE : запрашивает интерпретацию
+FE -> API : InterpretSelectionCommand(topic, focus)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now)
+Persistence --> Context : SessionSnapshot(state_version=1,\n base_chart={state_version=1, spec}, dialog)
+Context --> Orch : SessionSnapshot
+
+Orch -> Selection : handle(command, state, run)
+activate Selection
+Selection -> Selection : require base_chart
+Selection -> Selection : зафиксировать natal_spec и state_version\n на момент старта запроса
+Selection --> FE : SSE status { state_version = 1, chart_summary }
+
+note right of FE
+Версию карты несёт событие транспорта,
+а не текст модели: инструкция «верни
+параметры карты» ненадёжна, а плашка
+над ответом должна быть точной.
+end note
+
+Selection -> Agent : execute(ResolvedContract(\n selection, birth_resolved, natal_spec), run)
+activate Agent
+
+Agent -> EnsureNatal : run(birth_resolved, natal_spec, run)
+EnsureNatal -> Artifacts : ensure_chart(birth_resolved, natal_spec, run)
+Artifacts --> EnsureNatal : ChartArtifact
+EnsureNatal --> Agent : ChartArtifact
+
+Agent -> Interpretation : interpret(selection, artifact, run)
+Interpretation --> Agent : InterpretationResult / stream
+Agent --> Selection : InterpretationResult / stream
+deactivate Agent
+Selection --> Orch : Success(result)
+deactivate Selection
+
+Orch -> Context : append_turn(session_id, DialogTurn(\n selection, state_version_at_answer = 1,\n status = complete, text))
+Context -> Dialog : append(session_id, turn, now)
+Dialog --> Context : ok
+
+Orch --> API : Success / stream
+API --> FE : текст интерпретации
+FE --> User : ответ по текущей карте
+
+note over Store, Dialog
+BirthDataResolver повторно не вызывается.
+SessionState не меняется: state_version прежний,
+CAS не выполняется.
+
+Ход дописывается в DialogStore отдельной
+атомарной операцией. Поэтому интерпретация
+не может ни получить Superseded, ни вызвать
+его у параллельного построения карты.
+end note
+
+
+== 3. Явное изменение данных рождения ==
+
+User -> FE : нажимает «Изменить данные рождения»
+FE -> FE : открывает форму с сохранённым birth_input
+User -> FE : подтверждает новые данные
+
+FE -> API : UpdateBirthDataCommand(new_birth_input)
+API -> Orch : execute(command, session_id, run)
+
+Orch -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now)
+Persistence --> Context : SessionSnapshot(state_version=1, dialog)
+Context --> Orch : SessionSnapshot
+
+Orch -> Build : handle(update_command, current_state, run)
+activate Build
+Build -> Birth : resolve(new_birth_input)
+Birth --> Build : new ResolvedBirthData
+Build -> Artifacts : ensure_chart(new_resolved, natal_spec, run)
+Artifacts --> Build : new ChartArtifact
+Build -> Build : подготовить StateDelta(\n replace base_chart)
+Build --> Orch : BuildNatalSuccess(new_artifact, delta)
+deactivate Build
+
+Orch -> Context : save(session_id, original expected=1, delta)
+Context -> Store : compare_and_set(expected_version=1, delta, now)
+Store -> Store : применить delta и назначить version=2\nв атомарной CAS-секции
+Store --> Context : 2
+Context --> Orch : Committed(state_version=2)
+
+Orch --> API : Success(new_chart, state_version=2)
+API --> FE : new Chart DTO
+FE -> FE : заменяет значения карты
+FE -> FE : диалог теперь использует state_version=2
+FE --> User : обновлённая карта
+
+note over FE, Store
+До успешного commit остаётся активной карта
+версии 1. Ошибка resolve, calculation или save
+не переключает сессию на новый расчёт.
+end note
+
+note over Dialog, Store
+Диалог смену карты переживает: DialogStore
+не очищается. Старые ходы сохраняют свой
+state_version_at_answer = 1, и клиент рисует
+их с пометкой «по предыдущей карте».
+
+Если в этот момент шла генерация, поток
+**не прерывается**: пользователь получает
+ответ по той карте, что была в запросе.
+Событие superseded в контракт стрима
+не вводится (ADR-0012 не расширяется).
+end note
+
+
+== За границей MVP ==
+
+note over User, Agent
+Данные рождения из диалога не изменяются.
+Будущий agent tool build_natal рядом с
+ensure_natal в эту MVP-схему не входит.
+Для него нужен отдельный контракт явной
+мутации SessionState и отдельная sequence.
+
+derived_chart, active_view и SetActiveView
+в MVP отсутствуют: транзиты не входят
+в первый срез, активный вид всегда base.
+end note
+
+note over Context, Dialog
+Не показано здесь, есть в соседних диаграммах:
+возврат на страницу и восстановление диалога — 002,
+отказ хранилища на чтении — 003,
+сброс и удаление — 004,
+механизм CAS и три исхода записи — 005.
+end note
+
+@enduml

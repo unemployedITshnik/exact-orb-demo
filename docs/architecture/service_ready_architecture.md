@@ -44,9 +44,9 @@
 
 | Категория | Что это | Что происходит при разрезе |
 |-----------|---------|----------------------------|
-| **Shared contracts** | Типы и чистые функции, разделяемые обеими сторонами шва: `domain`, `errors`, `outcomes`, `calculation.spec`, `calculation.keys`, `calculation.cache`, `calculation.errors`, `birth.types` | Копируются или публикуются на обе стороны. Не вызываются по сети |
+| **Shared contracts** | Типы и чистые функции, разделяемые обеими сторонами шва: `domain`, `errors`, `outcomes`, `calculation.spec`, `calculation.keys`, `calculation.cache`, `calculation.errors`, `birth.types`, `session.state`, `session.outcomes`, `session.errors`, `session.store`, `session.dialog`, `session.persistence` | Копируются или публикуются на обе стороны. Не вызываются по сети |
 | **Logical services** | Единицы с осмысленным data-in/data-out: движок, артефакты карт, состояние, интерпретация | Становятся вызовом по сети |
-| **Ports / adapters** | Фасады и подключения: `tools` (ADR-0002), `llm.gateway`, кэш, каталог мест | Меняется реализация адаптера, контракт порта — нет |
+| **Ports / adapters** | Фасады и подключения: `tools` (ADR-0002), `llm.gateway`, кэш, каталог мест, фасеты `SessionStore`/`DialogStore` и агрегат `SessionPersistence` | Меняется реализация адаптера, контракт порта — нет |
 
 `Calculation Key / Spec` — **не сервис**, а shared kernel. `Tool / Agent-facing` —
 **не сервис**, а порт (ADR-0002). Ни то, ни другое не получает сетевую границу.
@@ -65,8 +65,8 @@ contract: сегодня они зависят от моделей резуль�
 |-----|----------------------|---------------------|-----------|
 | **Engine** | `ephemeris_runtime` сериализует все вызовы Swiss Ephemeris процессным локом; native-биндинг; профиль нагрузки — CPU | Высокая | Шов есть: `swiss_backend` — единственная точка импорта. Движок при этом читает `config` (см. долг) |
 | **Interpretation / LLM** | Внешняя latency и стоимость, стриминг, собственные лимиты | Высокая | `llm.gateway` выделен; ADR-0012, ADR-0018 |
-| **Calculation Cache** | Redis — уже другой процесс | Уже разрезан | Значение — `bytes`, не объект (ADR-0017) |
-| **State / Session** | CAS, версии, TTL | Средняя | ADR-0009, ADR-0014 |
+| **Calculation Cache** | Отдельный порт и opaque payload | Средняя | Сейчас in-memory; SQLite — ADR-0024. Значение — `bytes`, не объект (ADR-0017) |
+| **State / Session** | CAS, версии, TTL и атомарный lifecycle двух записей | Средняя | Фасетные порты плюс `SessionPersistence`; ADR-0009, ADR-0014, ADR-0024 |
 | **Birth Resolution** | Чистая функция плюс локальный справочник | Низкая | Выносить дороже, чем держать внутри |
 | **Tool / Agent-facing** | — | Не сервис | Порт с адаптерами `Local` / `Remote` (ADR-0002) |
 
@@ -77,9 +77,16 @@ contract: сегодня они зависят от моделей резуль�
 ### I1. Контрактный слой не импортирует native, runtime и edge
 
 `domain`, `errors`, `outcomes`, `calculation.spec`, `calculation.keys`,
-`calculation.cache`, `calculation.errors`, `birth.types` не импортируют
-`swisseph`, клиентов хранилищ и сети, `config`, `engine`, `llm`,
-`logging_setup`, `orchestration`, `tools`, `cli`.
+`calculation.cache`, `calculation.errors`, `birth.types` и session-контракты
+не импортируют
+`swisseph`, `sqlite3`, клиентов хранилищ и сети, `config`, `engine`, `llm`,
+`logging_setup`, `application`, `agent`, `orchestration`, `tools`, `cli`.
+
+Для всего пакета `session/` действует более сильная project-import allowlist:
+`exact_orb.session.*`, `exact_orb.birth.types` и
+`exact_orb.calculation.spec`. Отдельная runtime-проверка импорта
+`exact_orb.session` запрещает транзитивно поднимать native/runtime/edge и
+`sqlite3`; package root экспортирует только контракты, но не адаптеры.
 
 **Зачем сегодня.** Слой, который решает «идти ли в движок», не обязан поднимать
 движок: ключ кэша строится и проверяется без биндинга, тесты ключей идут
@@ -132,7 +139,10 @@ Calculation Cache остаётся opaque binary KV; decode и валидаци�
 прочитанное из окружения, в ключ не попадает.
 
 **Проверка.** AST-скан на запрещённые вызовы в контрактном и детерминированном
-слоях — расширение `tests/test_module_boundaries.py`.
+слоях — расширение `tests/test_module_boundaries.py`. Поэтому session-функции
+получают `now` аргументом, а новый `session_id` создаёт transport и передаёт
+его `SessionStore.create`; persistence не вызывает `datetime.now()` или
+`uuid4()` скрыто.
 
 **Исключение.** `RunContext` — телеметрия, а не доменные данные; фабрика
 `RunContext.new()` берёт время и `uuid` явно и остаётся единственным местом,
@@ -140,7 +150,9 @@ Calculation Cache остаётся opaque binary KV; decode и валидаци�
 
 ### I6. Модели, пересекающие шов, неизменяемы
 
-`model_config = ConfigDict(frozen=True)` на всех моделях контрактного слоя.
+`model_config = ConfigDict(frozen=True)` на всех моделях контрактного слоя,
+включая `SessionState`, `StateDelta`, outcomes и persistence-снимок
+`SessionSnapshot { state, dialog }`.
 
 **Зачем сегодня.** Получатель не может незаметно испортить вход отправителя.
 Мутация переданной модели — поведение, которое по сети не воспроизводится,
@@ -156,11 +168,14 @@ Calculation Cache остаётся opaque binary KV; decode и валидаци�
 * **Поток данных однонаправлен.** Никаких обратных вызовов из движка
   в оркестратор или состояние.
 * **Ни одна операция не требует атомарности между двумя logical services.**
-  Сегодня «положить в кэш и обновить состояние» кажется одним действием
-  просто потому, что это один процесс.
+  `SessionStore` и `DialogStore` — фасеты одного logical service, поэтому их
+  совместные touch/reset/delete принадлежат одному агрегату
+  `SessionPersistence`. Между кэшем расчёта и состоянием общей транзакции
+  нет.
 * **Ошибки между logical services типизированы.** Контракт уже есть:
-  `InputRequired`, `Issue`, `ResolutionUnavailable`. Исключения runtime-слоя
-  наружу шва не проходят.
+  `InputRequired`, `Issue`, `ResolutionUnavailable` и
+  `SessionPersistenceError(error_code)` с наследниками read/write.
+  Исключения runtime-слоя наружу шва не проходят.
 * **Версионируется то, что пересекает границу процесса или хранения**, —
   кэш, сессия, контракт LLM. Внутрипроцессные вызовы payload'ов не имеют;
   версионировать каждую функцию — ровно тот оверхед, от которого эта рамка

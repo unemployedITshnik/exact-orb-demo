@@ -26,8 +26,7 @@ BuildNatalCommand
     → BirthDataResolver
     → ChartArtifactResolver
     → EngineService
-    → ProfileService
-    → ContextDelta
+    → StateDelta
     → Application Orchestrator
     → ContextService (commit)
     → BuildNatalResult
@@ -69,7 +68,7 @@ BuildNatalCommand
    не существует, иначе появляется слой без собственной ответственности.
 
 5. **`BuildAttempt` не реализуется.** Актуальность результата обеспечивается
-   compare-and-set по `profile_version` (ADR-0014). Обоснование в §1.4.
+   compare-and-set по `state_version` (ADR-0014). Обоснование в §1.4.
 
 ### 1.4. Замер, на который опирается пятое решение
 
@@ -87,10 +86,10 @@ cosmogram        min 10.3 ms   median 17.4 ms   p95 18.4 ms   max 20.3 ms
 закрывает вкладку либо до отправки запроса (N1.1 — реагировать не на что),
 либо после получения ответа.
 
-Компенсирующий механизм — CAS по `profile_version`:
+Компенсирующий механизм — CAS по `state_version`:
 
 ```text
-A и B стартуют при profile_version = 5, обе expected = 5
+A и B стартуют при state_version = 5, обе expected = 5
 B коммитит первой:  CAS(5 → 6) успешно
 A коммитит позже:   expected 5 ≠ actual 6 → отказ, outcome Superseded
 ```
@@ -143,10 +142,16 @@ src/exact_orb/
 
     session/
         __init__.py
-        types.py                SessionProfile, SessionContext, ContextDelta
-        store.py                SessionStore, InMemorySessionStore
-        profile.py              ProfileService
-        context.py              ContextService
+        state.py                SessionState, StateDelta, RESET_DELTA, чистые переходы
+        outcomes.py             типизированные исходы lifecycle и CAS
+        errors.py               SessionPersistenceError, StateReadError, StateWriteError
+        store.py                SessionStore (Protocol)
+        dialog.py               DialogStore (Protocol)
+        persistence.py          SessionSnapshot, SessionPersistence (Protocol)
+        context.py              ContextService (P3)
+        adapters/
+            in_memory.py        P2
+            sqlite.py           P4
 
     bootstrap.py                композиция объектов на старте
 ```
@@ -164,7 +169,7 @@ src/exact_orb/
 #### `BirthInput`
 
 Пользовательский ввод в том виде, в котором он пришёл из формы. Хранится
-в `SessionProfile`, чтобы форму редактирования было чем заполнить (ADR-0009).
+в `SessionState`, чтобы форму редактирования было чем заполнить (ADR-0009).
 
 ```text
 BirthInput {
@@ -282,9 +287,14 @@ InputRequired {
 ```text
 ResolutionUnavailable { error_code: str, retryable: bool }
 CalculationFailed     { error_code: str }
+StateReadFailed       { error_code: str }
 StateCommitFailed     { error_code: str }
-Superseded            { expected_profile_version: int, actual_profile_version: int }
-SessionExpired        { }
+SessionCreated        { state: SessionState }
+SessionIdConflict     { session_id: str }
+Committed             { state_version: int }
+AlreadyApplied        { state_version: int }
+Superseded            { actual: SessionState }
+SessionAbsent         { reason: Literal["expired", "not_found"] }
 ```
 
 > **Инвариант.** Техническая недоступность никогда не преобразуется
@@ -373,38 +383,46 @@ ChartArtifact {
 
 ---
 
-### 3.5. `session/types.py`
+### 3.5. Контракты `session/`
 
 ```text
 ChartRef {
-    profile_version: int
-    spec:            ChartSpec
+    state_version: int            # >= 1
+    spec:          ChartSpec
 }
 
-SessionProfile {
-    birth_input:      BirthInput
-    birth_resolved:   ResolvedBirthData
-    profile_version:  int
-    base_chart:       ChartRef | None
-    derived_chart:    ChartRef | None
-    active_view:      Literal["base", "derived"]
+SessionState {
+    session_id:      str
+    birth_input:     BirthInput | None
+    birth_resolved:  ResolvedBirthData | None
+    state_version:   int
+    base_chart:      ChartRef | None
+    created_at:      datetime
+    expires_at:      datetime
+    hard_expires_at: datetime
 }
 
-SessionContext {
-    session_id: str
-    profile:    SessionProfile | None
+StateDelta {
+    birth_input:     BirthInput | None
+    birth_resolved:  ResolvedBirthData | None
+    base_chart_spec: ChartSpec | None
 }
 
-ContextDelta {
-    profile:          SessionProfile
-    expected_version: int
+RESET_DELTA = StateDelta(None, None, None)
+
+SessionSnapshot {
+    state:  SessionState
+    dialog: tuple[DialogTurn, ...]
 }
 ```
 
-`SessionContext` не содержит `current_build` — см. §1.4 и §13.
+Все модели frozen. У `SessionState` и `StateDelta` три nullable-поля либо
+целиком пусты, либо целиком заполнены. `SessionSnapshot` — согласованный
+persistence-снимок состояния и диалога, а не ещё одна сохраняемая сущность.
+`SessionContext` и `current_build` не вводятся — см. §1.4 и §13.
 
 `ChartRef` несёт версию, при которой карта получена. Инвариант
-`chart.profile_version == profile.profile_version` — единственная проверка
+`chart.state_version == state.state_version` — единственная проверка
 валидности ссылки (ADR-0014).
 
 ---
@@ -413,7 +431,6 @@ ContextDelta {
 
 ```text
 BuildNatalCommand {
-    session_id:  str
     birth_input: BirthInput
 }
 
@@ -423,9 +440,10 @@ RunContext {
 }
 ```
 
-**`run_id` в команду не входит.** Команда описывает пользовательское
-намерение: `session_id` говорит, состояние какой сессии меняется, и без
-него команда бессмысленна. `run_id` предметного смысла не несёт — две
+**Ни `session_id`, ни `run_id` в команду не входят.** Команда описывает
+только пользовательское намерение. `session_id` разрешается API из
+защищённой cookie и передаётся оркестратору отдельным доверенным контекстом;
+значение из тела/query/path не принимается. `run_id` предметного смысла не несёт — две
 одинаковые команды с разными `run_id` остаются одним намерением. Смешав
 их, мы протащим телеметрию через сигнатуры всех будущих команд.
 
@@ -750,7 +768,7 @@ await self.cache.put(key, encode_chart_artifact(artifact))
 return artifact
 ```
 
-**Чего не делает.** Не пишет в сессию; не знает `profile_version`; не решает,
+**Чего не делает.** Не пишет в сессию; не знает `state_version`; не решает,
 становится ли карта активной.
 
 **Тесты.** Промах вызывает движок ровно один раз; попадание не вызывает его
@@ -1112,108 +1130,144 @@ class BirthDataResolver:
 
 ### 6.1. `SessionStore` — `session/store.py`
 
-**Назначение.** Внешнее хранилище с TTL. Долговременного `Profile DB` нет
-(ADR-0009).
+**Назначение.** Read-only lookup и атомарный CAS состояния с TTL.
+Долговременного `Profile DB` нет (ADR-0009).
 
 **Контракт.**
 
 ```text
+@runtime_checkable
 class SessionStore(Protocol):
-    async def get(self, session_id: str) -> SessionProfile | None: ...
+    async def create(
+        self, session_id: str, *, now: datetime
+    ) -> SessionCreated | SessionIdConflict: ...
+    async def get(
+        self, session_id: str, *, now: datetime
+    ) -> SessionState | SessionAbsent: ...
     async def compare_and_set(
         self,
-        session_id:       str,
-        profile:          SessionProfile,
-        expected_version: int,
-    ) -> int | VersionConflict: ...
-
-class InMemorySessionStore(SessionStore):
-    def __init__(self, *, ttl_seconds: int) -> None: ...
+        session_id: str,
+        expected_state_version: int,
+        delta: StateDelta,
+        *,
+        now: datetime,
+    ) -> int | VersionConflict | SessionAbsent: ...
 ```
 
-**Ответственности.** **Версию присваивает store, а не handler** (ADR-0014):
-иначе два одновременных обновления прочитают версию 7 и оба запишут 8.
-Инкремент и запись — одна атомарная операция. TTL, по истечении которого
-`get` возвращает `None`.
+`create` принимает только свежий серверный идентификатор и `now`, сам строит
+начальное состояние и считает коллизией любую уже имеющуюся, включая
+истёкшую, строку; никогда её не читает и не перезаписывает. `get` read-only:
+он различает `SessionAbsent` и infrastructure failure, но не продлевает TTL.
+
+**Версию присваивает store, а не handler** (ADR-0014): store принимает
+дельту, применяет её к актуальному состоянию, инкрементирует версию и пишет
+результат одной атомарной операцией. Готовый state-кандидат порт не принимает.
+Устаревшая версия возвращает `VersionConflict(actual)`, отсутствие —
+`SessionAbsent`, а инфраструктурный отказ — типизированный
+`StateReadError`/`StateWriteError` с безопасным `error_code`.
 
 **Чего не делает.** Не знает, что такое карта; не принимает предметных
-решений; не логирует содержимое профиля (И-14).
+решений; не генерирует `session_id`; не продлевает TTL на `get`; не логирует
+содержимое состояния (И-14).
 
 **Тесты.** CAS с верной версией проходит и возвращает новую; с устаревшей —
-`VersionConflict` и профиль не изменён; два конкурентных CAS с одной
-`expected_version` — ровно один успех; после TTL `get` возвращает `None`.
+`VersionConflict(actual)` и состояние не изменено; два конкурентных CAS с
+одной `expected_state_version` — ровно один commit; `get` не меняет сроки;
+коллизия create не раскрывает и не заменяет существующую сессию.
 
 ---
 
-### 6.2. `ProfileService` — `session/profile.py`
+### 6.2. `DialogStore` и `SessionPersistence`
 
-**Назначение.** Чистые мутации `SessionProfile` без собственного хранилища
-(ADR-0009, ADR-0014).
-
-**Контракт.**
+`DialogStore` атомарно append/read/clear отдельной записи диалога. Его
+`read` read-only; `append` применяет пределы 50 ходов, 8 000 символов на ход
+и 120 000 суммарно. Усечение выставляет `truncated=True`, не меняя
+`status="complete" | "partial"`.
 
 ```text
-class ProfileService:
-    @staticmethod
-    def commit_base_chart(
-        current:        SessionProfile | None,
-        birth_input:    BirthInput,
-        birth_resolved: ResolvedBirthData,
-        spec:           ChartSpec,
-    ) -> ContextDelta: ...
+@runtime_checkable
+class DialogStore(Protocol):
+    async def append(
+        self, session_id: str, turn: DialogTurn, *, now: datetime
+    ) -> None | SessionAbsent: ...
+    async def read(
+        self, session_id: str, *, now: datetime
+    ) -> tuple[DialogTurn, ...] | SessionAbsent: ...
+    async def clear(
+        self, session_id: str, *, now: datetime
+    ) -> None | SessionAbsent: ...
 ```
 
-**Ответственности.** Сформировать новый профиль по правилу ADR-0014: после
-успешного расчёта обновляются `birth_input`, `birth_resolved`, `base_chart`,
-и **сбрасываются производные** — `derived_chart = None`, `active_view = base`.
-В `ContextDelta` кладётся `expected_version` — версия, при которой операция
-началась.
+Операции, затрагивающие обе записи, принадлежат агрегату:
 
-**О расхождении ADR-0009 и ADR-0014.** ADR-0009 говорит, что `ProfileService`
-«владеет инкрементом `profile_version`»; ADR-0014 — что «версию присваивает
-store». Разрешается так: `ProfileService` владеет **правилом** (какая версия
-ожидалась и почему запись отвергается), фактическое присвоение выполняется
-атомарно в store. Правило и его исполнение разнесены намеренно: правило
-проверяется юнит-тестом без I/O, атомарность — тестом на конкурентность.
+```text
+@runtime_checkable
+class SessionPersistence(Protocol):
+    sessions: SessionStore
+    dialogs:  DialogStore
 
-**Чего не делает.** Не обращается к хранилищу; не знает `session_id`;
-не выполняет I/O вообще.
+    async def touch(
+        self, session_id: str, *, now: datetime
+    ) -> SessionSnapshot | SessionAbsent: ...
+    async def reset(
+        self, session_id: str, expected_state_version: int, *, now: datetime
+    ) -> int | VersionConflict | SessionAbsent: ...
+    async def delete(self, session_id: str) -> None: ...
+```
 
-**Тесты.** Первое построение даёт `profile_version` ожидания 0; перестроение
-сбрасывает `derived_chart` и `active_view`; функция чистая — повторный вызов
-на тех же аргументах даёт равный результат.
+`touch` одним `now` продлевает состояние и существующую запись диалога и
+возвращает frozen `SessionSnapshot`. `reset` не является вторым алгоритмом:
+семантически это
+`sessions.compare_and_set(session_id, expected_state_version, RESET_DELTA,
+now=now)`: агрегат только делегирует, а RESET_DELTA-aware facet CAS сам
+очищает диалог внутри своей backend-секции. `delete`
+атомарно удаляет обе записи. Реализация через два независимых вызова фасетов
+недопустима.
+
+Чистые `new_session`, `apply_delta`, `touched`, `is_expired` и
+`matches_intent` живут в `session/state.py`; отдельный `ProfileService` не
+вводится. Store вызывает переход внутри атомарной CAS-секции.
 
 ---
 
 ### 6.3. `ContextService` — `session/context.py`
 
-**Назначение.** Единственный владелец persistence (ADR-0009).
+**Назначение.** Единственная application-граница блока сессий и владелец
+семантической классификации persistence outcomes (ADR-0009, ADR-0014).
 
-**Контракт.**
+`ContextService` получает `SessionPersistence`. Restore/load использует
+агрегатный `touch`, а не отдельные `get`, `read` и `touch`. Сохранение
+передаёт `SessionStore.compare_and_set` исходные `delta` и
+`expected_state_version` без построения кандидата.
 
 ```text
-class ContextService:
-    def __init__(self, *, store: SessionStore) -> None: ...
-
-    async def load(self, session_id: str) -> SessionContext: ...
-
-    async def save(
-        self,
-        session_id: str,
-        delta:      ContextDelta,
-    ) -> int | Superseded | SessionExpired | StateCommitFailed: ...
+int
+    -> Committed(state_version)
+VersionConflict(actual) + matches_intent(actual, delta)
+    -> AlreadyApplied(actual.state_version)
+VersionConflict(actual) + not matches_intent(actual, delta)
+    -> Superseded(actual)
+SessionAbsent
+    -> SessionAbsent
+StateReadError(error_code)
+    -> StateReadFailed(error_code)
+StateWriteError(error_code)
+    -> StateCommitFailed(error_code)
 ```
 
-**Ответственности.** Загрузка контекста в начале операции, CAS-запись
-в конце, приведение `VersionConflict` к `Superseded` и отсутствия сессии —
-к `SessionExpired`.
+`matches_intent` сравнивает `birth_resolved` и `base_chart_spec`, но не
+текстовую форму `birth_input`. `actual` берётся только из атомарного
+`VersionConflict`: сервис не делает дополнительный `get`, не выполняет
+скрытый retry и не перебазирует операцию на свежую версию.
 
-**Чего не делает.** Не принимает предметных решений о содержимом профиля.
+Полный reset идёт только через `SessionPersistence.reset`; delete — только
+через `SessionPersistence.delete`. `scope="dialog"` использует
+`DialogStore.clear` и не меняет `state_version`.
 
-**Тесты.** `load` несуществующей сессии даёт `SessionContext` с
-`profile = None`; `save` с устаревшей версией даёт `Superseded`, а не
-исключение; отказ store даёт `StateCommitFailed`, а не `Superseded` —
-это разные исходы.
+**Acceptance P3.** Проверяются все строки таблицы выше, отсутствие второго
+чтения после конфликта, сохранение original expected при повторе N7/N8,
+точное сохранение `error_code`, а также то, что reset-all и delete вызывают
+ровно агрегатные методы.
 
 ---
 
@@ -1222,7 +1276,7 @@ class ContextService:
 ### 7.1. `BuildNatalHandler` — `application/handlers/build_natal.py`
 
 **Назначение.** Владеет своим use case: провести операцию от `BirthInput`
-до `ContextDelta` (ADR-0006).
+до `StateDelta` (ADR-0006).
 
 **Контракт.**
 
@@ -1238,7 +1292,7 @@ class BuildNatalHandler:
     async def handle(
         self,
         command: BuildNatalCommand,
-        context: SessionContext,
+        state:   SessionState,
         run:     RunContext,
     ) -> BuildNatalOutcome: ...
 ```
@@ -1247,7 +1301,7 @@ class BuildNatalHandler:
 
 ```text
 BuildNatalOutcome =
-      BuildNatalSuccess { artifact: ChartArtifact, delta: ContextDelta }
+      BuildNatalSuccess { artifact: ChartArtifact, delta: StateDelta }
     | InputRequired
     | ResolutionUnavailable
     | CalculationFailed
@@ -1274,7 +1328,7 @@ include = {"positions", "aspects", "configurations"}
 
 3. `artifacts.ensure_chart(spec, resolved, run)`.
 
-4. `ProfileService.commit_base_chart(...)` → `ContextDelta`.
+4. Сформировать all-set `StateDelta`; новую версию handler не вычисляет.
 
 **Чего не делает.** Не сохраняет состояние сам — возвращает дельту,
 сохраняет оркестратор (ADR-0006). Не знает про `run_id` больше, чем нужно
@@ -1308,6 +1362,8 @@ class ApplicationOrchestrator:
     async def handle(
         self,
         command: Command,
+        *,
+        session_id: str,
         run:     RunContext | None = None,
     ) -> ApplicationResult: ...
 ```
@@ -1315,15 +1371,15 @@ class ApplicationOrchestrator:
 **Последовательность.**
 
 ```text
-1. run = run or RunContext.new()   — транспорт даёт свой, CLI и тест не дают
-2. context.load(session_id)
-3. session_id неизвестен и профиль отсутствует → продолжаем: первое
-   построение это нормальный случай
-4. выбрать handler по типу команды — словарь, не LLM
-5. await handler.handle(command, context, run)
-6. успех → context.save(session_id, delta)
-7. классифицировать исход
-8. вернуть ApplicationResult
+1. transport разрешает `session_id` только из cookie; при отсутствии cookie
+   генерирует свежий ID и insert-only создаёт сессию
+2. run = run or RunContext.new()   — транспорт даёт свой, CLI и тест не дают
+3. context.load(session_id) → `SessionSnapshot` либо типизированный отказ
+4. сохранить original `expected_state_version` из snapshot
+5. выбрать handler по типу команды — словарь, не LLM
+6. await handler.handle(command, snapshot.state, run)
+7. успех → context.save(session_id, original expected, delta)
+8. классифицировать исход и вернуть ApplicationResult
 ```
 
 **Ответственности.**
@@ -1340,7 +1396,9 @@ class ApplicationOrchestrator:
 **Чего не делает.** Не рассчитывает карту; не содержит астрологической
 логики; не знает Swiss Ephemeris; не строит промпты; не вызывает LLM;
 не выбирает agent tools и не знает их зависимостей; не мутирует
-`SessionProfile` самостоятельно; не принимает policy-решений.
+`SessionState` самостоятельно; не принимает policy-решений. При retry после
+неподтверждённого commit повторяет original expected и не выполняет rebase
+на свежую версию.
 
 > **Инвариант.** Application Orchestrator знает handlers, но не знает
 > topology agent tools (ADR-0006, ADR-0020).
@@ -1357,10 +1415,12 @@ class ApplicationOrchestrator:
 
 ```text
 ApplicationResult =
-      Success { chart: ChartArtifact, profile_version: int, active_view: "base" }
+      Success { chart: ChartArtifact, state_version: int }
     | InputRequired
+    | AlreadyApplied
     | Superseded
-    | SessionExpired
+    | SessionAbsent
+    | StateReadFailed
     | ResolutionUnavailable
     | CalculationFailed
     | StateCommitFailed
@@ -1464,7 +1524,7 @@ ADR-0012 требует до перехода к background execution измер
 |---|---|---|
 | B-1 | Техническая ошибка никогда не становится `InputRequired` | resolver, engine, store |
 | B-2 | Успех возвращается только после подтверждённого commit | orchestrator |
-| B-3 | Устаревший результат не меняет профиль и возвращается как `Superseded` | store CAS + orchestrator |
+| B-3 | Устаревший результат не меняет состояние; равное намерение даёт `AlreadyApplied`, иное — `Superseded` | store CAS + ContextService |
 | B-4 | `chart_kind` — явное поле, не выводится по отсутствию домов (И-8) | spec, artifact, DTO |
 | B-5 | Один `calculation_key` для UI-пути и agent-пути (ADR-0002) | тест на два пути |
 | B-6 | Ключ восстановим из `ChartSpec` и `ResolvedBirthData` (И-12) | keys |
@@ -1472,6 +1532,7 @@ ADR-0012 требует до перехода к background execution измер
 | B-8 | Build-путь не импортирует `agent/`, `tools/`, `intent/` | тест на импорты |
 | B-9 | Предупреждения расчёта доходят до артефакта (И-7) | engine, artifact |
 | B-10 | Персональные данные не попадают в журнал (И-14) | logging |
+| B-11 | N7 и N8 повторяют CAS с original expected; скрытого rebase нет | ContextService + application |
 
 B-8 в виде теста на импорты стоит дёшево и ловит самое вероятное нарушение
 разделения двух уровней оркестрации.
@@ -1488,7 +1549,7 @@ B-8 в виде теста на импорты стоит дёшево и лов
 | Э0 | контракты §3, ревизия ADR, зависимости | типы импортируются, тестов поведения нет |
 | Э1 | version, keys, cache, engine, artifacts, предупреждения космограммы | расчёт с кэшем работает без сессии и без HTTP |
 | Э2 | places, tz, resolver | форма → `ResolvedBirthData`, контрольный кейс 02.09.1990 зелёный |
-| Э3 | store, profile, context | CAS и отказ stale-записи |
+| Э3 | session ports, persistence, context | CAS, агрегатный lifecycle и отказ stale-записи |
 | Э4 | handler, orchestrator, results | сквозной путь `BuildNatalCommand → Success` |
 | Э5 | переименование `agent/`, `NatalTool` на резолвер | B-5 зелёный |
 | Э6 | бенчмарк конкурентности | требование ADR-0012 закрыто |

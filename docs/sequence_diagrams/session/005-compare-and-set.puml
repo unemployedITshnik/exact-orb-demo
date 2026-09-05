@@ -1,0 +1,165 @@
+@startuml
+title exact-orb — Compare-and-set: механизм и три исхода записи
+
+' Диаграмма объясняет сам механизм, а не пользовательский сценарий.
+' Прикладные ветки нарисованы в ../build_natal/006 и ../build_charts/008.
+' Здесь показано, что именно делает store и откуда берутся исходы
+' Committed, Superseded и AlreadyApplied.
+
+autonumber
+hide footbox
+
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+skinparam sequence {
+    ArrowColor #2563EB
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #FFFFFF
+
+    ParticipantBorderColor #64748B
+    ParticipantFontColor #0F172A
+    ParticipantBackgroundColor #F8FAFC
+
+    ActorBorderColor #64748B
+    ActorFontColor #0F172A
+    ActorBackgroundColor #DBEAFE
+
+    GroupBorderColor #94A3B8
+    GroupHeaderFontColor #1E293B
+
+    DividerBorderColor #94A3B8
+    DividerFontColor #1E293B
+
+    NoteBorderColor #94A3B8
+    NoteBackgroundColor #FFFBEA
+    NoteFontColor #334155
+}
+
+participant "Операция A" as A
+participant "Операция B" as B
+
+box "SESSION" #D1FAE5
+    control "ContextService" as Context
+    control "SessionPersistence" as Persistence
+    database "SessionStore" as Store
+end box
+
+
+== Обе операции стартуют на одной версии ==
+
+A -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now_A)
+Persistence --> Context : SessionSnapshot(state_version = 5)
+Context --> A : state_version = 5
+
+B -> Context : load(session_id)
+Context -> Persistence : touch(session_id, now_B)
+Persistence --> Context : SessionSnapshot(state_version = 5)
+Context --> B : state_version = 5
+
+note over A, B
+Обе прочитали 5 и обе готовят запись.
+Без CAS обе запишут версию 6, и результат
+первой исчезнет молча — lost update.
+end note
+
+
+== Побеждает та, что записала первой ==
+
+A -> Context : save(delta, expected_version = 5)
+Context -> Store : compare_and_set(expected = 5, delta_A, now_A)
+activate Store
+Store -> Store : проверить version; применить delta_A;\nназначить version=6; записать атомарно
+Store --> Context : 6
+deactivate Store
+Context --> A : Committed(state_version = 6)
+
+note right of Store
+Атомарность обеспечивает хранилище.
+Проверка `if version == expected: write`
+в коде приложения не является CAS:
+между проверкой и записью есть окно.
+
+Версию присваивает store, а не вызывающий:
+иначе оба участника вычислят одно число.
+end note
+
+
+== Проигравшая получает отказ, а не исключение ==
+
+B -> Context : save(delta, expected_version = 5)
+Context -> Store : compare_and_set(expected = 5, delta_B, now_B)
+activate Store
+Store -> Store : 5 != 6 — запись отклонена
+Store --> Context : VersionConflict(actual = state after A)
+deactivate Store
+
+note over Context, Store
+Store возвращает не только факт отказа,
+но и актуальное состояние. Оно взято
+из той же атомарной операции, поэтому
+между отказом и сравнением никто
+не вклинится, и повторное чтение
+не требуется.
+end note
+
+Context -> Context : сравнить намерение B\nс actual: birth_resolved и spec
+
+alt намерение B отличается от актуального состояния
+
+    Context --> B : Superseded
+    note right of B
+    Состояние ушло к другому намерению.
+    Пользователь просил одно, в сессии другое.
+    Клиент восстанавливает состояние (см. 002).
+    end note
+
+else намерение B совпадает с актуальным состоянием
+
+    Context --> B : AlreadyApplied
+    note right of B
+    Тот же ввод уже применён: двойной клик,
+    ретрай после таймаута, повторная доставка (N7).
+    Ничего не изменилось и менять нечего.
+    Клиент показывает результат как успех.
+    end note
+
+end
+
+note over Context, Store
+Это и есть acceptance P3: int → Committed;
+VersionConflict + equal intent → AlreadyApplied;
+VersionConflict + other intent → Superseded.
+ContextService не делает дополнительный get,
+не повторяет CAS и не меняет original expected.
+StateWriteError(error_code) — StateCommitFailed,
+а не VersionConflict или Superseded.
+end note
+
+
+== Чего CAS не делает ==
+
+note over A, Store
+CAS защищает **состояние сессии**, а не расчёт.
+Дублирование расчёта предотвращает single-flight
+в ChartArtifactResolver: одинаковый calculation_key
+даёт один вызов движка, второй ждёт результат.
+
+Поэтому отдельный idempotency_key не нужен:
+дорогая часть идемпотентна через single-flight,
+состояние защищено CAS.
+
+Ходы диалога через CAS не проходят вовсе:
+DialogStore — отдельная запись со своим
+атомарным append. Добавление хода не меняет
+state_version и не конфликтует с построением
+карты.
+
+Полный reset использует тот же CAS с RESET_DELTA.
+SessionPersistence только делегирует reset этому CAS;
+RESET_DELTA-aware facet CAS сам очищает dialog
+в своей backend-секции. Второго алгоритма нет.
+end note
+
+@enduml

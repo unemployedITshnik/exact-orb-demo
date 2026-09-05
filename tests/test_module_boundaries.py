@@ -38,6 +38,42 @@ PACKAGE_ROOT = SRC_ROOT / "exact_orb"
 pytestmark = pytest.mark.no_ephemeris_autoinit
 
 
+SESSION_CONTRACT_MODULES: tuple[str, ...] = (
+    "exact_orb.session.errors",
+    "exact_orb.session.state",
+    "exact_orb.session.outcomes",
+    "exact_orb.session.dialog",
+    "exact_orb.session.store",
+    "exact_orb.session.persistence",
+)
+
+SESSION_ALLOWED_PROJECT_IMPORTS: tuple[str, ...] = (
+    "exact_orb.session.",
+    "exact_orb.birth.types",
+    "exact_orb.calculation.spec",
+)
+
+SESSION_FORBIDDEN_AT_RUNTIME: tuple[str, ...] = (
+    "swisseph",
+    "sqlite3",
+    "aiosqlite",
+    "redis",
+    "exact_orb.swiss_backend",
+    "exact_orb.engine",
+    "exact_orb.config",
+    "exact_orb.calculation.artifacts",
+    "exact_orb.calculation.engine",
+    "exact_orb.calculation.types",
+    "exact_orb.calculation.codec",
+    "exact_orb.application",
+    "exact_orb.agent",
+    "exact_orb.orchestration",
+    "exact_orb.tools",
+    "exact_orb.llm",
+    "exact_orb.cli",
+)
+
+
 # Контрактный слой (L0): типы и чистые функции, разделяемые обеими
 # сторонами потенциального шва. `calculation.types`, `calculation.codec`,
 # `calculation.engine` и `calculation.artifacts` сознательно выведены из
@@ -52,12 +88,15 @@ CONTRACT_MODULES: tuple[str, ...] = (
     "exact_orb.calculation.cache",
     "exact_orb.calculation.errors",
     "exact_orb.birth.types",
+    *SESSION_CONTRACT_MODULES,
 )
 
 # Native — потому что ключи и спецификации строятся без биндинга.
 # Runtime и edge — потому что контракт не зависит от того, кто его исполняет.
 FORBIDDEN_FOR_CONTRACTS: tuple[str, ...] = (
     "swisseph",
+    "sqlite3",
+    "aiosqlite",
     "redis",
     "httpx",
     "litellm",
@@ -165,6 +204,60 @@ def _contract_source_files() -> list[Path]:
     ]
 
 
+def _session_contract_source_files() -> list[Path]:
+    return [
+        path
+        for path in _iter_source_files()
+        if _module_name(path) in SESSION_CONTRACT_MODULES
+    ]
+
+
+def _find_import_cycle(graph: dict[str, set[str]]) -> tuple[str, ...] | None:
+    """Return one declared-import cycle, including its repeated start node."""
+
+    visited: set[str] = set()
+    active: list[str] = []
+    active_set: set[str] = set()
+
+    def visit(module: str) -> tuple[str, ...] | None:
+        if module in active_set:
+            start = active.index(module)
+            return tuple((*active[start:], module))
+        if module in visited:
+            return None
+
+        active.append(module)
+        active_set.add(module)
+        for dependency in sorted(graph[module]):
+            cycle = visit(dependency)
+            if cycle is not None:
+                return cycle
+        active.pop()
+        active_set.remove(module)
+        visited.add(module)
+        return None
+
+    for module in sorted(graph):
+        cycle = visit(module)
+        if cycle is not None:
+            return cycle
+    return None
+
+
+def _uses_type_checking_guard(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    return any(
+        (isinstance(node, ast.Name) and node.id == "TYPE_CHECKING")
+        or (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "typing"
+            and node.attr == "TYPE_CHECKING"
+        )
+        for node in ast.walk(tree)
+    )
+
+
 def test_contract_source_files_are_discovered() -> None:
     """Страховка от молчаливо зелёного теста после переезда модулей."""
 
@@ -175,6 +268,7 @@ def test_contract_source_files_are_discovered() -> None:
         "exact_orb.calculation.errors",
         "exact_orb.calculation.keys",
         "exact_orb.calculation.spec",
+        *SESSION_CONTRACT_MODULES,
     } <= modules
 
 
@@ -192,6 +286,135 @@ def test_contracts_declare_no_forbidden_imports() -> None:
     )
 
     assert not violations, "контрактный слой импортирует запрещённое:\n" + "\n".join(violations)
+
+
+def test_session_contracts_only_declare_allowlisted_project_imports() -> None:
+    """Session contracts depend only on their package and two shared contracts."""
+
+    violations = sorted(
+        {
+            f"{_module_name(path)} -> {imported}"
+            for path in _session_contract_source_files()
+            for imported in _declared_imports(path)
+            if imported.startswith("exact_orb.")
+            and not any(
+                (
+                    imported.startswith(allowed)
+                    if allowed.endswith(".")
+                    else imported == allowed or imported.startswith(f"{allowed}.")
+                )
+                for allowed in SESSION_ALLOWED_PROJECT_IMPORTS
+            )
+        }
+    )
+
+    assert not violations, "session contracts импортируют вне allowlist:\n" + "\n".join(
+        violations
+    )
+
+
+def test_session_contract_import_graph_is_acyclic() -> None:
+    """Declared imports must remain acyclic even when hidden behind guards."""
+
+    paths = {_module_name(path): path for path in _session_contract_source_files()}
+    assert set(paths) == set(SESSION_CONTRACT_MODULES), (
+        "не найдены все session contract modules: "
+        f"expected={sorted(SESSION_CONTRACT_MODULES)}, actual={sorted(paths)}"
+    )
+
+    graph = {
+        module: {
+            candidate
+            for imported in _declared_imports(path)
+            for candidate in SESSION_CONTRACT_MODULES
+            if candidate != module
+            and (imported == candidate or imported.startswith(f"{candidate}."))
+        }
+        for module, path in paths.items()
+    }
+    cycle = _find_import_cycle(graph)
+
+    assert cycle is None, "session contract import cycle: " + " -> ".join(cycle or ())
+
+
+def test_session_contracts_do_not_hide_imports_behind_type_checking() -> None:
+    """TYPE_CHECKING must not be an escape hatch around the dependency graph."""
+
+    violations = sorted(
+        _module_name(path)
+        for path in _session_contract_source_files()
+        if _uses_type_checking_guard(path)
+    )
+
+    assert not violations, "TYPE_CHECKING запрещён в session contracts: " + ", ".join(
+        violations
+    )
+
+
+def test_session_outcomes_do_not_declare_dialog_import() -> None:
+    """Snapshot owns the only state/dialog join, so outcomes cannot depend on dialog."""
+
+    path = PACKAGE_ROOT / "session" / "outcomes.py"
+    imports = _declared_imports(path)
+
+    assert not any(
+        imported == "exact_orb.session.dialog"
+        or imported.startswith("exact_orb.session.dialog.")
+        for imported in imports
+    ), "session.outcomes must not import session.dialog"
+
+
+def test_session_package_import_keeps_runtime_and_edge_modules_out() -> None:
+    """A clean package import exposes the API without loading implementations."""
+
+    required = (
+        "SessionState",
+        "SessionSnapshot",
+        "SessionStore",
+        "DialogStore",
+        "SessionPersistence",
+    )
+    script = "\n".join(
+        (
+            "import importlib, json, sys",
+            "package = importlib.import_module('exact_orb.session')",
+            f"required = {list(required)!r}",
+            f"forbidden = {list(SESSION_FORBIDDEN_AT_RUNTIME)!r}",
+            "missing = sorted(name for name in required if not hasattr(package, name))",
+            "found = sorted(",
+            "    name",
+            "    for name in sys.modules",
+            "    for bad in forbidden",
+            "    if name == bad or name.startswith(bad + '.')",
+            ")",
+            "print(json.dumps({'missing': missing, 'found': found}))",
+        )
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC_ROOT)
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, (
+        "импорт exact_orb.session завершился ошибкой:\n" + completed.stderr
+    )
+
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert not result["missing"], (
+        "package import выполнился, но публичный API неполон: "
+        + ", ".join(result["missing"])
+    )
+    assert not result["found"], (
+        "package import транзитивно загрузил запрещённое: "
+        + ", ".join(result["found"])
+    )
 
 
 def test_swisseph_enters_the_process_through_one_module() -> None:

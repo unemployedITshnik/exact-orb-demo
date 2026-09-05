@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class BirthInput(BaseModel):
     """Structured birth data accepted by the build path."""
+
+    model_config = ConfigDict(frozen=True)
 
     birth_date: date
     birth_time: time | None = None
@@ -26,6 +28,8 @@ class BirthInput(BaseModel):
 class ResolutionWarning(BaseModel):
     """A machine-checkable warning produced during resolution."""
 
+    model_config = ConfigDict(frozen=True)
+
     source: Literal["place", "time"]
     code: str
     message: str
@@ -33,6 +37,8 @@ class ResolutionWarning(BaseModel):
 
 class ResolvedBirthData(BaseModel):
     """Resolved facts used by calculation and later UI restoration."""
+
+    model_config = ConfigDict(frozen=True)
 
     utc_datetime: datetime
     latitude: float
