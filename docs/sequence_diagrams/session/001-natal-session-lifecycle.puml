@@ -97,8 +97,7 @@ API -> Orch : execute(command, session_id, run)
 
 Orch -> Context : load(session_id)
 Context -> Persistence : touch(session_id, now)
-Persistence --> Context : SessionSnapshot(state_version = 0,
-dialog = ())
+Persistence --> Context : SessionSnapshot(state_version = 0,\ndialog = ())
 Context --> Orch : SessionSnapshot
 
 Orch -> Build : handle(command, empty state_version=0, run)
