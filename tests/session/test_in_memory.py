@@ -82,6 +82,15 @@ class TestInMemorySessionPersistence(SessionPersistenceConformance):
         assert isinstance(result, SessionSnapshot)
         assert "touch-no-dialog" not in persistence._backend.dialogs
 
+    async def test_read_without_dialog_does_not_create_private_record(self) -> None:
+        persistence = InMemorySessionPersistence()
+        await create_session(persistence, "read-no-dialog")
+
+        result = await persistence.dialogs.read("read-no-dialog", now=NOW)
+
+        assert result == ()
+        assert "read-no-dialog" not in persistence._backend.dialogs
+
     async def test_clear_removes_private_dialog_record(self) -> None:
         persistence = InMemorySessionPersistence()
         await create_session(persistence, "clear-private")

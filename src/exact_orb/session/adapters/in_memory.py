@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
-from exact_orb.session.adapters._time import _validate_now
+from exact_orb.session.adapters._time import validate_now
 from exact_orb.session.dialog import DialogTurn, append_dialog_turn
 from exact_orb.session.outcomes import (
     SessionAbsent,
@@ -65,7 +65,7 @@ class InMemorySessionStore:
         *,
         now: datetime,
     ) -> SessionCreated | SessionIdConflict:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             if session_id in self._backend.states:
                 return SessionIdConflict(session_id=session_id)
@@ -80,7 +80,7 @@ class InMemorySessionStore:
         *,
         now: datetime,
     ) -> SessionState | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             return _live_state(self._backend, session_id, now=now)
 
@@ -92,7 +92,7 @@ class InMemorySessionStore:
         *,
         now: datetime,
     ) -> int | VersionConflict | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             actual = _live_state(self._backend, session_id, now=now)
             if isinstance(actual, SessionAbsent):
@@ -135,7 +135,7 @@ class InMemoryDialogStore:
         *,
         now: datetime,
     ) -> None | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             actual = _live_state(self._backend, session_id, now=now)
             if isinstance(actual, SessionAbsent):
@@ -160,7 +160,7 @@ class InMemoryDialogStore:
         *,
         now: datetime,
     ) -> tuple[DialogTurn, ...] | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             state = _live_state(self._backend, session_id, now=now)
             if isinstance(state, SessionAbsent):
@@ -174,7 +174,7 @@ class InMemoryDialogStore:
         *,
         now: datetime,
     ) -> None | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             actual = _live_state(self._backend, session_id, now=now)
             if isinstance(actual, SessionAbsent):
@@ -204,7 +204,7 @@ class InMemorySessionPersistence:
         *,
         now: datetime,
     ) -> SessionSnapshot | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         async with self._backend.lock:
             actual = _live_state(self._backend, session_id, now=now)
             if isinstance(actual, SessionAbsent):
@@ -231,7 +231,7 @@ class InMemorySessionPersistence:
         *,
         now: datetime,
     ) -> int | VersionConflict | SessionAbsent:
-        _validate_now(now)
+        validate_now(now)
         return await self.sessions.compare_and_set(
             session_id,
             expected_state_version,

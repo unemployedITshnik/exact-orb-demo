@@ -283,6 +283,7 @@ def test_session_package_exports_the_complete_public_contract() -> None:
         "is_expired",
         "matches_intent",
         "new_session",
+        "require_utc",
         "touched",
     }
 

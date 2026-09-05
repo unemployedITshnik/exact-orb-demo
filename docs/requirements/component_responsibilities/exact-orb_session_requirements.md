@@ -407,10 +407,12 @@ append синхронизируют deadlines существующих state/dia
 state и удаляет dialog. Любое продление ограничено `hard_expires_at`.
 
 Каждый port-параметр `now` обязан быть timezone-aware с UTC offset `0`.
-InMemory и SQLite используют один validator
-`exact_orb.session.adapters._time`: невалидное время даёт обычный
-`ValueError` до storage lookup и до любой мутации. `delete` времени не
-принимает.
+Предусловие выражено публичной контрактной функцией `require_utc`, доступной
+из `exact_orb.session`. Внутренний wrapper
+`exact_orb.session.adapters._time.validate_now` фиксирует port-specific имя
+`now` для InMemory и SQLite; adapter-слой не импортирует приватные имена
+контрактных модулей. Невалидное время даёт обычный `ValueError` до storage
+lookup и до любой мутации. `delete` времени не принимает.
 
 Абсолютный потолок нужен затем, что бесконечно продлеваемое окно
 противоречит privacy-модели ADR-0010: данные рождения не должны жить в
@@ -925,7 +927,9 @@ ADR-0013 называл кэш интерпретаций вторым уров�
 одним `asyncio.Lock` и отдаёт стабильные facets `.sessions` и `.dialogs` над
 ним; zero-argument создание отдельных facet не поддерживается. Два aggregate
 полностью изолированы. Все now-bearing методы InMemory, а в P4 и SQLite,
-используют один private validator `session/adapters/_time.py`.
+используют публичный контракт `exact_orb.session.require_utc` через внутренний
+wrapper `session/adapters/_time.py`; импорт приватных имён контрактных модулей
+для adapter-слоя запрещён.
 
 ### 12.3. SQLite закрывает все хранилища
 

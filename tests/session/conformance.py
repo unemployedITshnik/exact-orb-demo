@@ -358,7 +358,7 @@ class SessionPersistenceConformance:
                     make_turn(created_at=created_at),
                     now=created_at,
                 )
-                inspection_time = created_at
+                inspection_time = NOW
             else:
                 inspection_time = NOW
 
@@ -367,6 +367,11 @@ class SessionPersistenceConformance:
                 session_id,
                 now=inspection_time,
             )
+            if lifecycle_kind == "expired":
+                assert before == (
+                    SessionAbsent(reason="expired"),
+                    SessionAbsent(reason="expired"),
+                )
             with pytest.raises(ValueError) as caught:
                 await _invoke_now_method(
                     persistence,
@@ -526,6 +531,8 @@ class SessionPersistenceConformance:
         persistence_factory: PersistenceFactory,
         lifecycle_kind: str,
     ) -> None:
+        """Completing both absence paths proves transition errors do not escape."""
+
         async with persistence_factory() as handles:
             persistence = handles.primary
             session_id = f"cas-{lifecycle_kind}"
@@ -543,7 +550,6 @@ class SessionPersistenceConformance:
 
             expected_reason = "not_found" if lifecycle_kind == "missing" else "expired"
             assert result == SessionAbsent(reason=expected_reason)
-            assert not isinstance(result, ExpiredSessionTransitionError)
             assert await persistence.sessions.get(session_id, now=now) == SessionAbsent(
                 reason=expected_reason
             )
@@ -694,6 +700,8 @@ class SessionPersistenceConformance:
         persistence_factory: PersistenceFactory,
         lifecycle_kind: str,
     ) -> None:
+        """Completing both absence paths proves transition errors do not escape."""
+
         async with persistence_factory() as handles:
             persistence = handles.primary
             session_id = f"append-{lifecycle_kind}"
@@ -710,7 +718,6 @@ class SessionPersistenceConformance:
 
             expected_reason = "not_found" if lifecycle_kind == "missing" else "expired"
             assert result == SessionAbsent(reason=expected_reason)
-            assert not isinstance(result, ExpiredSessionTransitionError)
             assert await persistence.sessions.get(session_id, now=now) == SessionAbsent(
                 reason=expected_reason
             )
@@ -898,6 +905,8 @@ class SessionPersistenceConformance:
         persistence_factory: PersistenceFactory,
         lifecycle_kind: str,
     ) -> None:
+        """Completing both absence paths proves transition errors do not escape."""
+
         async with persistence_factory() as handles:
             persistence = handles.primary
             session_id = f"clear-{lifecycle_kind}"
@@ -910,7 +919,6 @@ class SessionPersistenceConformance:
 
             expected_reason = "not_found" if lifecycle_kind == "missing" else "expired"
             assert result == SessionAbsent(reason=expected_reason)
-            assert not isinstance(result, ExpiredSessionTransitionError)
             assert await persistence.sessions.get(session_id, now=now) == SessionAbsent(
                 reason=expected_reason
             )
@@ -921,6 +929,8 @@ class SessionPersistenceConformance:
         persistence_factory: PersistenceFactory,
         lifecycle_kind: str,
     ) -> None:
+        """Completing both absence paths proves transition errors do not escape."""
+
         async with persistence_factory() as handles:
             persistence = handles.primary
             session_id = f"touch-{lifecycle_kind}"
@@ -933,7 +943,6 @@ class SessionPersistenceConformance:
 
             expected_reason = "not_found" if lifecycle_kind == "missing" else "expired"
             assert result == SessionAbsent(reason=expected_reason)
-            assert not isinstance(result, ExpiredSessionTransitionError)
             assert await persistence.sessions.get(session_id, now=now) == SessionAbsent(
                 reason=expected_reason
             )
@@ -1172,6 +1181,8 @@ class SessionPersistenceConformance:
         persistence_factory: PersistenceFactory,
         lifecycle_kind: str,
     ) -> None:
+        """Completing both absence paths proves transition errors do not escape."""
+
         async with persistence_factory() as handles:
             persistence = handles.primary
             session_id = f"reset-{lifecycle_kind}"
@@ -1184,7 +1195,6 @@ class SessionPersistenceConformance:
 
             expected_reason = "not_found" if lifecycle_kind == "missing" else "expired"
             assert result == SessionAbsent(reason=expected_reason)
-            assert not isinstance(result, ExpiredSessionTransitionError)
             assert await persistence.sessions.get(session_id, now=now) == SessionAbsent(
                 reason=expected_reason
             )

@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
+import exact_orb.session.state as state_module
 from exact_orb.birth.types import BirthInput, ResolutionWarning, ResolvedBirthData
 from exact_orb.calculation.spec import NatalChartSpec
 from exact_orb.session.errors import (
@@ -24,6 +25,7 @@ from exact_orb.session.state import (
     is_expired,
     matches_intent,
     new_session,
+    require_utc,
     touched,
 )
 
@@ -283,6 +285,40 @@ def test_new_session_sets_exact_initial_version_and_lifetimes() -> None:
     assert state.created_at == NOW
     assert state.expires_at == NOW + SLIDING_TTL
     assert state.hard_expires_at == NOW + HARD_TTL
+
+
+def test_require_utc_returns_the_same_aware_utc_object() -> None:
+    assert require_utc(NOW) is NOW
+
+
+@pytest.mark.parametrize(
+    "invalid_timestamp",
+    [
+        datetime(2026, 9, 5, 12),
+        datetime(2026, 9, 5, 15, tzinfo=timezone(timedelta(hours=3))),
+    ],
+    ids=["naive", "non-zero-offset"],
+)
+def test_require_utc_rejects_invalid_timestamps_with_the_supplied_name(
+    invalid_timestamp: datetime,
+) -> None:
+    with pytest.raises(ValueError) as caught:
+        require_utc(invalid_timestamp, name="port time")
+
+    assert type(caught.value) is ValueError
+    assert str(caught.value) == "port time must be timezone-aware UTC"
+
+
+def test_require_utc_uses_timestamp_as_the_default_name() -> None:
+    with pytest.raises(ValueError) as caught:
+        require_utc(datetime(2026, 9, 5, 12))
+
+    assert type(caught.value) is ValueError
+    assert str(caught.value) == "timestamp must be timezone-aware UTC"
+
+
+def test_require_utc_is_exported_by_the_state_module() -> None:
+    assert "require_utc" in state_module.__all__
 
 
 @pytest.mark.parametrize(

@@ -151,7 +151,7 @@ src/exact_orb/
         context.py              ContextService (P3)
         adapters/
             __init__.py         public concrete adapter exports
-            _time.py            единая private UTC-валидация now для P2/P4
+            _time.py            internal wrapper над public require_utc для P2/P4
             in_memory.py        P2
             sqlite.py           P4
 
@@ -1235,8 +1235,10 @@ now=now)`: агрегат только делегирует, а RESET_DELTA-awar
 позиционно и не создаются без аргумента. Parent `SessionState` — единственный
 источник liveness; private dialog deadline в P2 хранится, но не читается.
 
-Все now-bearing методы InMemory и будущего SQLite используют один private
-validator `session/adapters/_time.py`. Он требует aware UTC offset `0` и
+Все now-bearing методы InMemory и будущего SQLite используют публичный
+контракт `exact_orb.session.require_utc`. Внутренний wrapper
+`session/adapters/_time.py` фиксирует для портов имя `now`, не импортируя
+приватные имена контрактных модулей. Контракт требует aware UTC offset `0` и
 возвращает `ValueError` до lookup/mutation; скрытых clock/config источников у
 адаптеров нет.
 

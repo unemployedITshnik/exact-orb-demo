@@ -16,7 +16,9 @@ SLIDING_TTL: Final = timedelta(days=7)
 HARD_TTL: Final = timedelta(days=30)
 
 
-def _require_utc(value: datetime, *, name: str) -> datetime:
+def require_utc(value: datetime, *, name: str = "timestamp") -> datetime:
+    """Return the same aware UTC value or reject it with a named error."""
+
     if value.tzinfo is None or value.utcoffset() != timedelta(0):
         raise ValueError(f"{name} must be timezone-aware UTC")
     return value
@@ -48,7 +50,7 @@ class SessionState(BaseModel):
     @field_validator("created_at", "expires_at", "hard_expires_at")
     @classmethod
     def _timestamps_must_be_utc(cls, value: datetime) -> datetime:
-        return _require_utc(value, name="session timestamp")
+        return require_utc(value, name="session timestamp")
 
     @model_validator(mode="after")
     def _state_must_be_consistent(self) -> Self:
@@ -102,7 +104,7 @@ RESET_DELTA: Final[StateDelta] = StateDelta(
 def new_session(session_id: str, *, now: datetime) -> SessionState:
     """Create an empty state with a fresh sliding and absolute lifetime."""
 
-    _require_utc(now, name="now")
+    require_utc(now, name="now")
     return SessionState(
         session_id=session_id,
         birth_input=None,
@@ -118,7 +120,7 @@ def new_session(session_id: str, *, now: datetime) -> SessionState:
 def is_expired(state: SessionState, *, now: datetime) -> bool:
     """Return whether either lifetime boundary has been reached."""
 
-    _require_utc(now, name="now")
+    require_utc(now, name="now")
     return now >= state.expires_at or now >= state.hard_expires_at
 
 
@@ -198,5 +200,6 @@ __all__ = [
     "is_expired",
     "matches_intent",
     "new_session",
+    "require_utc",
     "touched",
 ]

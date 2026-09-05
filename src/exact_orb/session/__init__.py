@@ -38,6 +38,7 @@ from exact_orb.session.state import (
     is_expired,
     matches_intent,
     new_session,
+    require_utc,
     touched,
 )
 from exact_orb.session.store import SessionStore
@@ -77,5 +78,6 @@ __all__ = [
     "is_expired",
     "matches_intent",
     "new_session",
+    "require_utc",
     "touched",
 ]

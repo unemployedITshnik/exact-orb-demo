@@ -244,11 +244,7 @@ def _session_contract_source_files() -> list[Path]:
 
 
 def _session_adapter_source_files() -> list[Path]:
-    return [
-        path
-        for path in _iter_source_files()
-        if _module_name(path) in SESSION_ADAPTER_MODULES
-    ]
+    return sorted((PACKAGE_ROOT / "session" / "adapters").rglob("*.py"))
 
 
 def _find_import_cycle(graph: dict[str, set[str]]) -> tuple[str, ...] | None:
@@ -428,6 +424,43 @@ def test_session_adapters_only_import_session_project_modules() -> None:
     )
 
 
+def test_session_adapters_do_not_import_private_contract_names() -> None:
+    violations: list[str] = []
+    observed_contract_imports: list[str] = []
+    contract_sources = {"exact_orb.session", *SESSION_CONTRACT_MODULES}
+
+    for path in _session_adapter_source_files():
+        module = _module_name(path)
+        is_package = path.name == "__init__.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            source = (
+                _resolve_relative(module, is_package, node.level, node.module)
+                if node.level
+                else node.module or ""
+            )
+            if source not in contract_sources:
+                continue
+            observed_contract_imports.extend(
+                f"{module} -> {source}.{alias.name}" for alias in node.names
+            )
+            violations.extend(
+                f"{module} -> {source}.{alias.name}"
+                for alias in node.names
+                if alias.name.startswith("_")
+            )
+
+    assert observed_contract_imports, (
+        "positive control: adapter contract imports were not discovered"
+    )
+    assert not violations, (
+        "session adapters импортируют приватные имена контрактов:\n"
+        + "\n".join(sorted(violations))
+    )
+
+
 def test_session_adapters_declare_no_hidden_time_id_or_edge_imports() -> None:
     violations = sorted(
         {
@@ -469,6 +502,7 @@ def test_session_package_import_keeps_runtime_and_edge_modules_out() -> None:
         "SessionStore",
         "DialogStore",
         "SessionPersistence",
+        "require_utc",
     )
     script = "\n".join(
         (
@@ -523,7 +557,7 @@ def test_session_adapters_import_cleanly_with_positive_controls() -> None:
             "required = ['InMemorySessionStore', 'InMemoryDialogStore', 'InMemorySessionPersistence']",
             f"forbidden = {list(SESSION_ADAPTER_FORBIDDEN_AT_RUNTIME)!r}",
             "missing = sorted(name for name in required if not hasattr(package, name))",
-            "positive = hasattr(time_module, '_validate_now') and all(hasattr(in_memory, name) for name in required)",
+            "positive = hasattr(time_module, 'validate_now') and all(hasattr(in_memory, name) for name in required)",
             "found = sorted(",
             "    name",
             "    for name in sys.modules",
