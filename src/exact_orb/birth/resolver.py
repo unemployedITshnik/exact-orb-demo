@@ -18,6 +18,7 @@ from exact_orb.birth.tz import (
     TzNonexistent,
     TzOk,
     UnknownTimezoneError,
+    build_birth_time_domain,
     local_date_exists,
     resolve_anomaly,
     resolve_historical_tz,
@@ -122,6 +123,19 @@ class BirthDataResolver:
             _log_resolution_unavailable(run, outcome, _elapsed_ms(started_at))
             return outcome
 
+        birth_time_domain = None
+        if time_unknown:
+            birth_time_domain = build_birth_time_domain(
+                birth_input.birth_date,
+                place.tz_id,
+            )
+            if birth_time_domain is None:
+                outcome = InputRequired(
+                    issues=(Issue(field="birth.date", code="INVALID"),)
+                )
+                _log_input_required(run, outcome, _elapsed_ms(started_at))
+                return outcome
+
         if isinstance(tz_resolution, TzNonexistent) and not local_date_exists(
             birth_input.birth_date,
             place.tz_id,
@@ -174,6 +188,7 @@ class BirthDataResolver:
             utc_offset_seconds=tz_ok.utc_offset_seconds,
             canonical_place=place.canonical_name,
             time_unknown=time_unknown,
+            birth_time_domain=birth_time_domain,
             warnings=tuple(warnings),
         )
         _log_resolved(run, resolved, _elapsed_ms(started_at))

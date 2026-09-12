@@ -155,7 +155,7 @@ Resolver -> Resolver : local_datetime = birth_date + birth_time\n(при time_un
 Resolver -> TZ : resolve_historical_tz(local_datetime, tz_id)
 TZ --> Resolver : TzOk(utc_datetime,\nutc_offset_applied, warnings)
 
-Resolver --> Handler : ResolvedBirthData\n(time_unknown = false)
+Resolver --> Handler : ResolvedBirthData\n(time_unknown = false, birth_time_domain = None)
 deactivate Resolver
 
 note over Resolver, TZ
@@ -197,7 +197,8 @@ Keys --> Artifacts : key
 note right of Keys
 Ключ строится из проекции
 CalculationInput (utc_datetime,
-latitude, longitude), а не из всего
+latitude, longitude,
+birth_time_domain_digest), а не из всего
 ResolvedBirthData: canonical_place
 и warnings в ключ не входят (§4.2).
 

@@ -14,7 +14,13 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from exact_orb.birth.types import ResolutionWarning, ResolvedBirthData
+from exact_orb.birth.types import (
+    BirthTimeDomain,
+    ResolutionWarning,
+    ResolvedBirthData,
+    UtcMinuteRange,
+    birth_time_domain_digest,
+)
 from exact_orb.calculation import (
     CalculationInput,
     NatalChartSpec,
@@ -41,14 +47,14 @@ BASE_LONGITUDE = 37.617299
 # with a schema_version bump or an ADR note. Do not refresh them for incidental
 # serializer drift.
 EXPECTED_CANONICAL_JSON = (
-    '{"calculation_input":{"latitude":55.755825,"longitude":37.617299,'
+    '{"calculation_input":{"birth_time_domain_digest":null,"latitude":55.755825,"longitude":37.617299,'
     '"utc_datetime":"1990-09-02T10:30:45Z"},"calculation_version":"test-version-1",'
-    '"schema_version":"v1","spec":{"chart_kind":"natal","house_system":"P",'
+    '"schema_version":"v2","spec":{"chart_kind":"natal","house_system":"P",'
     '"include":["aspects","configurations","houses","positions","rulers","strength"],'
     '"near_interception_threshold":1.0,"rulership":"combined","technique":"natal"}}'
 )
 EXPECTED_CALCULATION_KEY = (
-    "eo:calc:v1:6080cb27406936a135d6c767e099e2670b1262cb2ad73fdcf7ebc980f4da0e4b"
+    "eo:calc:v2:06ef45f543c675eedce6605807a02ad9eb4d8e6543fc9207489d1e4379fc1fa4"
 )
 
 
@@ -99,6 +105,7 @@ def test_projection_ignores_non_key_birth_resolution_fields() -> None:
         utc_offset_seconds=0,
         canonical_place="Reference place",
         time_unknown=False,
+        birth_time_domain=None,
     )
     changed = ResolvedBirthData(
         utc_datetime=BASE_UTC,
@@ -107,7 +114,8 @@ def test_projection_ignores_non_key_birth_resolution_fields() -> None:
         tz_id="Europe/Moscow",
         utc_offset_seconds=10800,
         canonical_place="Another displayed place",
-        time_unknown=True,
+        time_unknown=False,
+        birth_time_domain=None,
         warnings=(
             ResolutionWarning(
                 source="place",
@@ -127,11 +135,13 @@ def test_same_semantic_inputs_produce_same_key() -> None:
         utc_datetime=BASE_UTC.replace(microsecond=999999),
         latitude=10.0000004,
         longitude=-4e-7,
+        birth_time_domain_digest=None,
     )
     second_input = CalculationInput(
         utc_datetime=BASE_UTC,
         latitude=10.0,
         longitude=0.0,
+        birth_time_domain_digest=None,
     )
     first_spec = NatalChartSpec(
         chart_kind="natal",
@@ -149,10 +159,10 @@ def test_semantic_changes_change_key() -> None:
     base_key = _key(base_input, base_spec)
 
     cases = [
-        (CalculationInput(utc_datetime=BASE_UTC + timedelta(seconds=1), latitude=BASE_LATITUDE, longitude=BASE_LONGITUDE), base_spec, VERSION),
-        (CalculationInput(utc_datetime=BASE_UTC, latitude=BASE_LATITUDE + 0.000001, longitude=BASE_LONGITUDE), base_spec, VERSION),
-        (CalculationInput(utc_datetime=BASE_UTC, latitude=BASE_LATITUDE, longitude=BASE_LONGITUDE + 0.000001), base_spec, VERSION),
-        (base_input, NatalChartSpec(chart_kind="cosmogram"), VERSION),
+        (CalculationInput(utc_datetime=BASE_UTC + timedelta(seconds=1), latitude=BASE_LATITUDE, longitude=BASE_LONGITUDE, birth_time_domain_digest=None), base_spec, VERSION),
+        (CalculationInput(utc_datetime=BASE_UTC, latitude=BASE_LATITUDE + 0.000001, longitude=BASE_LONGITUDE, birth_time_domain_digest=None), base_spec, VERSION),
+        (CalculationInput(utc_datetime=BASE_UTC, latitude=BASE_LATITUDE, longitude=BASE_LONGITUDE + 0.000001, birth_time_domain_digest=None), base_spec, VERSION),
+        (base_input.model_copy(update={"birth_time_domain_digest": "0" * 64}), NatalChartSpec(chart_kind="cosmogram"), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", include=("houses", "positions")), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", rulership=RulershipScheme.MODERN), VERSION),
         (base_input, NatalChartSpec(chart_kind="natal", near_interception_threshold=2.0), VERSION),
@@ -209,13 +219,63 @@ def test_natal_chart_spec_rejects_unsupported_house_system(house_system: str) ->
 def test_key_format_is_exact() -> None:
     key = _key(_base_input(), NatalChartSpec(chart_kind="natal"))
 
-    assert key.startswith("eo:calc:v1:")
-    assert re.fullmatch(r"eo:calc:v1:[0-9a-f]{64}", key)
+    assert key.startswith("eo:calc:v2:")
+    assert re.fullmatch(r"eo:calc:v2:[0-9a-f]{64}", key)
+
+
+def test_time_domain_digest_is_required_and_gated_by_chart_kind() -> None:
+    with pytest.raises(ValidationError, match="birth_time_domain_digest"):
+        CalculationInput(
+            utc_datetime=BASE_UTC,
+            latitude=BASE_LATITUDE,
+            longitude=BASE_LONGITUDE,
+        )
+    with pytest.raises(ValidationError, match="lowercase hexadecimal"):
+        CalculationInput(
+            utc_datetime=BASE_UTC,
+            latitude=BASE_LATITUDE,
+            longitude=BASE_LONGITUDE,
+            birth_time_domain_digest="A" * 64,
+        )
+
+    cosmogram_input = _base_input().model_copy(
+        update={"birth_time_domain_digest": "0" * 64}
+    )
+    with pytest.raises(ValueError, match="natal.*must not"):
+        calculation_key(
+            cosmogram_input,
+            NatalChartSpec(chart_kind="natal"),
+            VERSION,
+        )
+    with pytest.raises(ValueError, match="cosmogram.*requires"):
+        calculation_key(
+            _base_input(),
+            NatalChartSpec(chart_kind="cosmogram"),
+            VERSION,
+        )
+
+
+def test_time_domain_change_changes_cosmogram_key() -> None:
+    first_domain = BirthTimeDomain(
+        ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=1),)
+    )
+    second_domain = BirthTimeDomain(
+        ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=2),)
+    )
+    spec = NatalChartSpec(chart_kind="cosmogram")
+    first = _base_input().model_copy(
+        update={"birth_time_domain_digest": birth_time_domain_digest(first_domain)}
+    )
+    second = _base_input().model_copy(
+        update={"birth_time_domain_digest": birth_time_domain_digest(second_domain)}
+    )
+
+    assert calculation_key(first, spec, VERSION) != calculation_key(second, spec, VERSION)
 
 
 def test_datetime_must_be_utc_and_microseconds_are_truncated() -> None:
     with pytest.raises(ValidationError, match="timezone-aware UTC"):
-        CalculationInput(utc_datetime=datetime(1990, 9, 2, 10, 30), latitude=0.0, longitude=0.0)
+        CalculationInput(utc_datetime=datetime(1990, 9, 2, 10, 30), latitude=0.0, longitude=0.0, birth_time_domain_digest=None)
 
     with pytest.raises(ValidationError, match="timezone-aware UTC"):
         CalculationInput(
@@ -229,12 +289,14 @@ def test_datetime_must_be_utc_and_microseconds_are_truncated() -> None:
             ),
             latitude=0.0,
             longitude=0.0,
+            birth_time_domain_digest=None,
         )
 
     calc_input = CalculationInput(
         utc_datetime=BASE_UTC.replace(microsecond=123456),
         latitude=0.0,
         longitude=0.0,
+        birth_time_domain_digest=None,
     )
 
     assert calc_input.utc_datetime == BASE_UTC
@@ -248,6 +310,7 @@ def test_coordinate_half_up_quantization_uses_decimal_string_semantics() -> None
         utc_datetime=BASE_UTC,
         latitude=0.1234565,
         longitude=2.6754995,
+        birth_time_domain_digest=None,
     )
 
     assert calc_input.latitude == 0.123457
@@ -257,24 +320,24 @@ def test_coordinate_half_up_quantization_uses_decimal_string_semantics() -> None
 def test_coordinates_reject_non_finite_and_out_of_range_values() -> None:
     for value in (float("nan"), float("inf"), -float("inf"), -90.000001, 90.000001):
         with pytest.raises(ValidationError):
-            CalculationInput(utc_datetime=BASE_UTC, latitude=value, longitude=0.0)
+            CalculationInput(utc_datetime=BASE_UTC, latitude=value, longitude=0.0, birth_time_domain_digest=None)
 
     for value in (float("nan"), float("inf"), -float("inf"), -180.000001, 180.000001, 200.0):
         with pytest.raises(ValidationError):
-            CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=value)
+            CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=value, birth_time_domain_digest=None)
 
 
 def test_longitude_boundary_is_canonical_without_modulo() -> None:
-    east = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=180.0)
-    west = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=-180.0)
+    east = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=180.0, birth_time_domain_digest=None)
+    west = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=-180.0, birth_time_domain_digest=None)
 
     assert east.longitude == -180.0
     assert _key(east, NatalChartSpec(chart_kind="natal")) == _key(west, NatalChartSpec(chart_kind="natal"))
 
 
 def test_negative_zero_is_normalized_in_model_and_key() -> None:
-    negative_zero = CalculationInput(utc_datetime=BASE_UTC, latitude=-4e-7, longitude=-0.0)
-    zero = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=0.0)
+    negative_zero = CalculationInput(utc_datetime=BASE_UTC, latitude=-4e-7, longitude=-0.0, birth_time_domain_digest=None)
+    zero = CalculationInput(utc_datetime=BASE_UTC, latitude=0.0, longitude=0.0, birth_time_domain_digest=None)
 
     assert negative_zero.latitude == 0.0
     assert math.copysign(1.0, negative_zero.latitude) == 1.0
@@ -374,7 +437,7 @@ def test_key_can_be_computed_without_ephe_directory(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert completed.stdout.strip().startswith("eo:calc:v1:")
+    assert completed.stdout.strip().startswith("eo:calc:v2:")
 
 
 def _base_input() -> CalculationInput:
@@ -382,6 +445,7 @@ def _base_input() -> CalculationInput:
         utc_datetime=BASE_UTC,
         latitude=BASE_LATITUDE,
         longitude=BASE_LONGITUDE,
+        birth_time_domain_digest=None,
     )
 
 
@@ -411,7 +475,7 @@ def _key_script() -> str:
         "from exact_orb.calculation import CalculationInput, NatalChartSpec, calculation_key; "
         "calc_input = CalculationInput("
         "utc_datetime=datetime(1990, 9, 2, 10, 30, 45, tzinfo=timezone.utc), "
-        "latitude=55.755825, longitude=37.617299); "
+        "latitude=55.755825, longitude=37.617299, birth_time_domain_digest=None); "
         "spec = NatalChartSpec(chart_kind='natal', "
         "include={'strength', 'rulers', 'positions', 'houses', 'configurations', 'aspects'}, "
         "house_system='p'); "

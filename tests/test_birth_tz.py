@@ -7,16 +7,118 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
+
+from exact_orb.birth.types import (
+    BirthTimeDomain,
+    UtcMinuteRange,
+    birth_time_domain_digest,
+)
 
 from exact_orb.birth.tz import (
     TzAmbiguous,
     TzNonexistent,
     TzOk,
     UnknownTimezoneError,
+    build_birth_time_domain,
     local_date_exists,
     resolve_anomaly,
     resolve_historical_tz,
 )
+
+
+def test_birth_time_domain_counts_normal_gap_and_fold_days() -> None:
+    normal = build_birth_time_domain(date(2026, 1, 1), "Europe/Berlin")
+    gap = build_birth_time_domain(date(2026, 3, 29), "Europe/Berlin")
+    fold = build_birth_time_domain(date(2026, 10, 25), "Europe/Berlin")
+
+    assert normal is not None and normal.minute_count == 1440
+    assert gap is not None and gap.minute_count == 1380
+    assert fold is not None and fold.minute_count == 1500
+    assert datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc) in fold
+    assert datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc) in fold
+
+
+def test_birth_time_domain_preserves_historical_offset_seconds() -> None:
+    domain = build_birth_time_domain(date(1971, 1, 1), "Africa/Monrovia")
+
+    assert domain is not None
+    assert domain.ranges[0].first_utc.second == 30
+    assert all(moment.second == 30 for moment in domain.iter_utc())
+
+
+def test_fully_skipped_local_date_has_no_birth_time_domain() -> None:
+    assert build_birth_time_domain(date(2011, 12, 30), "Pacific/Apia") is None
+
+
+def test_utc_minute_range_and_domain_reject_noncanonical_shapes() -> None:
+    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValidationError, match="positive int"):
+        UtcMinuteRange(first_utc=first, count=True)
+    with pytest.raises(ValidationError, match="positive int"):
+        UtcMinuteRange(first_utc=first, count=0)
+    with pytest.raises(ValidationError, match="timezone-aware UTC"):
+        UtcMinuteRange(first_utc=first.replace(tzinfo=None), count=1)
+    with pytest.raises(ValidationError, match="microseconds"):
+        UtcMinuteRange(first_utc=first.replace(microsecond=1), count=1)
+    with pytest.raises(ValidationError, match="overflows datetime"):
+        UtcMinuteRange(
+            first_utc=datetime.max.replace(tzinfo=timezone.utc, microsecond=0),
+            count=2,
+        )
+    with pytest.raises(ValidationError, match="merged"):
+        BirthTimeDomain(
+            ranges=(
+                UtcMinuteRange(first_utc=first, count=1),
+                UtcMinuteRange(first_utc=first.replace(minute=1), count=1),
+            )
+        )
+    with pytest.raises(ValidationError, match="sorted and non-overlapping"):
+        BirthTimeDomain(
+            ranges=(
+                UtcMinuteRange(first_utc=first.replace(minute=1), count=2),
+                UtcMinuteRange(first_utc=first, count=2),
+            )
+        )
+
+
+def test_birth_time_domain_round_trip_preserves_seconds_and_tuple_order() -> None:
+    domain = BirthTimeDomain(
+        ranges=(
+            UtcMinuteRange(
+                first_utc=datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc),
+                count=2,
+            ),
+            UtcMinuteRange(
+                first_utc=datetime(2026, 1, 1, 0, 3, 0, tzinfo=timezone.utc),
+                count=1,
+            ),
+        )
+    )
+
+    restored = BirthTimeDomain.model_validate_json(domain.model_dump_json())
+
+    assert restored == domain
+    assert tuple(restored.iter_utc()) == (
+        datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 0, 1, 30, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 0, 3, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_birth_time_domain_digest_has_canonical_golden() -> None:
+    domain = BirthTimeDomain(
+        ranges=(
+            UtcMinuteRange(
+                first_utc=datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc),
+                count=2,
+            ),
+        )
+    )
+
+    assert birth_time_domain_digest(domain) == (
+        "7acf48d9274f8f6517425a73e8f97a190df88dbebbdde9a65ce202892ef2c2d6"
+    )
 
 
 @pytest.mark.parametrize(

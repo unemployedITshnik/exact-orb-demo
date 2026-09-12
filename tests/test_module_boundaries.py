@@ -1451,6 +1451,7 @@ def test_research_projection_explicitly_loads_engine_but_not_edges() -> None:
                 "exact_orb.calculation.chart_contract",
                 "exact_orb.calculation.types",
                 "exact_orb.engine",
+                "exact_orb.engine.charts.uncertainty",
                 "exact_orb.swiss_backend",
             }
         ),

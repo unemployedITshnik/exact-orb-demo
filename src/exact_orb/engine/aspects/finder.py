@@ -62,7 +62,7 @@ def find_aspects(
             )
         )
 
-    result = sorted(aspects, key=_sort_key)
+    result = sorted(aspects, key=aspect_sort_key)
     LOGGER.debug("find_aspects complete pairs=%d aspects=%d", len(pairs), len(result))
     return result
 
@@ -130,7 +130,9 @@ def _same_point(left: PositionedPoint, right: PositionedPoint) -> bool:
     return left.chart == right.chart and left.body == right.body
 
 
-def _sort_key(aspect: Aspect) -> tuple[int, float, str, str, int]:
+def aspect_sort_key(aspect: Aspect) -> tuple[int, float, str, str, int]:
+    """Return the canonical order shared by aspect-producing chart paths."""
+
     category_order = {"exact": 0, "working": 1, "background": 2}
     return (
         category_order[aspect.category.value],
@@ -139,3 +141,6 @@ def _sort_key(aspect: Aspect) -> tuple[int, float, str, str, int]:
         aspect.to_point.body,
         ASPECT_PRIORITY[aspect.aspect_type],
     )
+
+
+__all__ = ["angular_distance", "aspect_sort_key", "find_aspects"]

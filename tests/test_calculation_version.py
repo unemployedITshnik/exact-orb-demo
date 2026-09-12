@@ -62,6 +62,11 @@ EXPECTED_CANONICAL_JSON = (
 EXPECTED_VERSION = (
     "eo:calcver:v1:f2f5d3d9975068f9e28c176b18ecafe9b38d2f2b6b076d83a053694e936845cc"
 )
+# Captured before ADR-0032; the implementation changes the engine method,
+# not any AspectConfig/ConfigurationConfig/StrengthConfig profile.
+PRE_ADR_0032_PROFILES_DIGEST = (
+    "69629f0c755c3a2e74b34d6b9d6b492fba98d2cdfaad00d1b8cb4d89a73dfce7"
+)
 
 
 def test_record_has_stable_golden_fingerprint() -> None:
@@ -154,6 +159,19 @@ def test_collector_reads_engine_version_at_call_time(
 
     assert after.engine_version == changed_engine_version
     assert calculation_version_of(after) != calculation_version_of(before)
+
+
+def test_adr_0032_bumps_engine_version_without_changing_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ephe = _ephemeris_directory(tmp_path / "ephe", {})
+    _stable_runtime(monkeypatch, tmp_path)
+
+    record = _record_for(ephe)
+
+    assert record.engine_version == "4"
+    assert record.profiles_digest == PRE_ADR_0032_PROFILES_DIGEST
 
 
 def test_collector_reads_default_profiles_at_call_time(

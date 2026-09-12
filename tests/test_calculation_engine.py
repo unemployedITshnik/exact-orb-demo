@@ -17,7 +17,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from exact_orb.birth.types import ResolvedBirthData
+from exact_orb.birth.types import BirthTimeDomain, ResolvedBirthData, UtcMinuteRange
 from exact_orb.calculation.engine import (
     CalculationEnginePort,
     CalculationResult,
@@ -34,6 +34,7 @@ from exact_orb.config import EphemerisStatus
 from exact_orb.domain import DEFAULT_INCLUDE_BY_CHART_KIND, RulershipScheme
 from exact_orb.engine.charts import natal as natal_module
 from exact_orb.engine.charts.natal import NatalChart
+from exact_orb.engine.charts.uncertainty import CosmogramTimeUncertainty
 from exact_orb.engine.ephemeris import calc as calc_module
 from exact_orb.engine.ephemeris import selena as selena_module
 from exact_orb.engine.ephemeris.types import CalculationWarning
@@ -169,6 +170,7 @@ def test_natal_technique_adapter_maps_current_spec_fields_without_run_or_artifac
         "rulership": RulershipScheme.MODERN,
         "include": frozenset({"houses", "positions"}),
         "near_interception_threshold": 2.5,
+        "birth_time_domain": None,
     }
     assert "run" not in received["kwargs"]
     assert result.chart is chart
@@ -184,10 +186,12 @@ def test_natal_adapter_passes_cosmogram_default_include() -> None:
         return _raw_chart(chart_kind="cosmogram")
 
     spec = NatalChartSpec(chart_kind="cosmogram")
-    result = NatalTechniqueAdapter(calculator=fake_calculator).calculate(spec, _resolved())
+    resolved = _resolved(time_unknown=True)
+    result = NatalTechniqueAdapter(calculator=fake_calculator).calculate(spec, resolved)
 
     assert result.chart.chart_kind == "cosmogram"
     assert received["kwargs"]["include"] == frozenset(DEFAULT_INCLUDE_BY_CHART_KIND["cosmogram"])
+    assert received["kwargs"]["birth_time_domain"] == resolved.birth_time_domain
 
 
 async def test_engine_service_runs_adapter_in_executor_and_keeps_event_loop_alive(
@@ -474,7 +478,8 @@ async def test_cosmogram_result_rejects_forbidden_house_blocks() -> None:
             techniques={"natal": good_adapter},
             slow_threshold_ms=3000.0,
         )
-        assert await good_service.calculate(spec, _resolved(), run=_run()) == CalculationResult(
+        resolved = _resolved(time_unknown=True)
+        assert await good_service.calculate(spec, resolved, run=_run()) == CalculationResult(
             chart=good_chart
         )
 
@@ -484,12 +489,71 @@ async def test_cosmogram_result_rejects_forbidden_house_blocks() -> None:
             slow_threshold_ms=3000.0,
         )
         with pytest.raises(ChartCalculationError) as exc_info:
-            await bad_service.calculate(spec, _resolved(), run=_run())
+            await bad_service.calculate(spec, resolved, run=_run())
 
     assert exc_info.value.code == "ENGINE_UNEXPECTED"
     assert exc_info.value.run_id == str(RUN_ID)
     assert good_adapter.calls == 1
     assert bad_adapter.calls == 1
+
+
+async def test_cosmogram_result_rejects_foreign_time_domain() -> None:
+    spec = NatalChartSpec(chart_kind="cosmogram", include=("positions",))
+    resolved = _resolved(time_unknown=True)
+    good_chart = _raw_chart(chart_kind="cosmogram")
+    foreign_domain = BirthTimeDomain(
+        ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=2),)
+    )
+    bad_chart = good_chart.model_copy(
+        update={
+            "time_uncertainty": good_chart.time_uncertainty.model_copy(
+                update={"domain": foreign_domain}
+            )
+        }
+    )
+    adapter = FakeAdapter(CalculationResult(chart=bad_chart))
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        service = EngineService(
+            executor=executor,
+            techniques={"natal": adapter},
+            slow_threshold_ms=3000.0,
+        )
+        with pytest.raises(ChartCalculationError) as exc_info:
+            await service.calculate(spec, resolved, run=_run())
+
+    assert exc_info.value.code == "ENGINE_UNEXPECTED"
+    assert adapter.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("spec", "time_unknown"),
+    (
+        (NatalChartSpec(chart_kind="natal"), True),
+        (
+            NatalChartSpec(chart_kind="cosmogram", include=("positions",)),
+            False,
+        ),
+    ),
+)
+async def test_chart_kind_and_time_domain_mismatch_is_rejected_before_worker(
+    spec: NatalChartSpec,
+    time_unknown: bool,
+) -> None:
+    adapter = FakeAdapter()
+    resolved = _resolved(time_unknown=time_unknown)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        service = EngineService(
+            executor=executor,
+            techniques={"natal": adapter},
+            slow_threshold_ms=3000.0,
+        )
+        with pytest.raises(ChartCalculationError) as exc_info:
+            await service.calculate(spec, resolved, run=_run())
+
+    assert exc_info.value.code == "SPEC_INVALID"
+    assert adapter.calls == 0
 
 
 async def test_engine_logs_complete_request_and_mapped_failure_without_traceback(
@@ -681,6 +745,16 @@ def _raw_chart(
         aspects=None,
         configurations=None,
         strength=None,
+        time_uncertainty=(
+            CosmogramTimeUncertainty(
+                domain=BirthTimeDomain(
+                    ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=1),)
+                ),
+                excluded_aspects=None,
+            )
+            if chart_kind == "cosmogram"
+            else None
+        ),
         warnings=warnings,
     )
 
@@ -693,7 +767,13 @@ def _resolved(
     *,
     latitude: float = 55.7558,
     longitude: float = 37.6173,
+    time_unknown: bool = False,
 ) -> ResolvedBirthData:
+    domain = (
+        BirthTimeDomain(ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=1),))
+        if time_unknown
+        else None
+    )
     return ResolvedBirthData.model_construct(
         utc_datetime=BASE_UTC,
         latitude=latitude,
@@ -701,7 +781,8 @@ def _resolved(
         tz_id="Europe/Moscow",
         utc_offset_seconds=10800,
         canonical_place="Moscow",
-        time_unknown=False,
+        time_unknown=time_unknown,
+        birth_time_domain=domain,
         warnings=(),
     )
 

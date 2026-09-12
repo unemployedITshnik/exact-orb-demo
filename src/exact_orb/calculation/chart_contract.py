@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from exact_orb.birth.types import ResolvedBirthData
+from exact_orb.birth.types import ResolvedBirthData, birth_time_domain_digest
 from exact_orb.domain import normalize_natal_house_system_code
 from exact_orb.engine.charts.natal import NatalChart
 
@@ -17,6 +17,11 @@ def calculation_input_from_chart(chart: NatalChart) -> CalculationInput:
         utc_datetime=chart.datetime_utc,
         latitude=chart.latitude,
         longitude=chart.longitude,
+        birth_time_domain_digest=(
+            birth_time_domain_digest(chart.time_uncertainty.domain)
+            if chart.time_uncertainty is not None
+            else None
+        ),
     )
 
 
@@ -65,6 +70,13 @@ def validate_chart_against_resolved(
 
     if chart.datetime_utc != resolved.utc_datetime:
         raise ValueError("chart.datetime_utc must match resolved.utc_datetime")
+    chart_domain = (
+        chart.time_uncertainty.domain
+        if chart.time_uncertainty is not None
+        else None
+    )
+    if chart_domain != resolved.birth_time_domain:
+        raise ValueError("chart time domain must match resolved birth time domain")
     validate_chart_against_calculation_input(chart, calculation_input_from(resolved))
 
 

@@ -65,6 +65,7 @@ RESOLVED = ResolvedBirthData(
     utc_offset_seconds=14_400,
     canonical_place="Moscow",
     time_unknown=False,
+    birth_time_domain=None,
     warnings=(
         ResolutionWarning(
             source="place",
@@ -81,6 +82,7 @@ OTHER_RESOLVED = ResolvedBirthData(
     utc_offset_seconds=10_800,
     canonical_place="Saint Petersburg",
     time_unknown=False,
+    birth_time_domain=None,
 )
 SPEC = NatalChartSpec(chart_kind="natal")
 OTHER_SPEC = NatalChartSpec(chart_kind="cosmogram")

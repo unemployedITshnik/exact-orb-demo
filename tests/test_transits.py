@@ -33,6 +33,7 @@ import pytest
 from pydantic import ValidationError
 import swisseph as swe
 
+from exact_orb.birth.types import BirthTimeDomain, UtcMinuteRange
 from exact_orb.config import configure_ephemeris
 from exact_orb.engine.aspects import AspectConfig
 from exact_orb.engine.charts import transit as transit_calc
@@ -331,6 +332,19 @@ def test_calculate_transit_requires_natal_houses() -> None:
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include={"positions"},
+        birth_time_domain=BirthTimeDomain(
+            ranges=(
+                UtcMinuteRange(
+                    first_utc=REFERENCE["datetime_utc"].replace(
+                        hour=0,
+                        minute=0,
+                        second=0,
+                        microsecond=0,
+                    ),
+                    count=1440,
+                ),
+            )
+        ),
     )
 
     with pytest.raises(ValueError, match="natal chart must include houses"):

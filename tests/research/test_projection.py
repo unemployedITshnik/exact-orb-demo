@@ -21,6 +21,11 @@ from exact_orb.engine.aspects import (
     AspectType as EngineAspectType,
 )
 from exact_orb.engine.charts import natal as natal_module
+from exact_orb.engine.charts.uncertainty import (
+    CosmogramTimeUncertainty,
+    UnstableAspect,
+    UnstableAspectReason,
+)
 from exact_orb.engine.configurations.patterns import common as configuration_common
 from exact_orb.engine.configurations.types import (
     Configuration,
@@ -554,6 +559,40 @@ def test_cosmogram_keeps_house_absent_and_does_not_invent_house_families() -> No
     assert projected.bodies[0].house is None
     assert projected.angles is None
     assert projected.dignities is projected.strengths is projected.balance is None
+
+
+def test_cosmogram_projection_does_not_restore_excluded_aspect() -> None:
+    base = raw_chart(chart_kind="cosmogram")
+    diagnostic = UnstableAspect(
+        from_point=AspectPointRef(chart="natal", body="sun"),
+        to_point=AspectPointRef(chart="natal", body="moon"),
+        reasons=(UnstableAspectReason.NOT_PRESENT_FOR_ALL_TIMES,),
+        includes_no_aspect=True,
+        possible_aspect_types=(EngineAspectType.CONJUNCTION,),
+        possible_categories=(EngineAspectCategory.EXACT,),
+    )
+    chart = natal_module.NatalChart.model_validate(
+        {
+            **base.model_dump(),
+            "bodies": {
+                "sun": _body("sun", "Aries", house=None),
+                "moon": _body("moon", "Aries", house=None),
+            },
+            "aspects": (),
+            "configurations": (),
+            "time_uncertainty": CosmogramTimeUncertainty(
+                domain=base.time_uncertainty.domain,
+                excluded_aspects=(diagnostic,),
+            ),
+        }
+    )
+
+    projected = project_chart_features(
+        artifact(spec=chart_spec(chart_kind="cosmogram"), chart=chart)
+    )
+
+    assert projected.aspects == ()
+    assert projected.configurations == ()
 
 
 def _all_values(value: object):

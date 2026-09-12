@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -30,7 +31,7 @@ from exact_orb.session.outcomes import (
     SessionIdConflict,
     VersionConflict,
 )
-from exact_orb.session.persistence import SessionSnapshot
+from exact_orb.session.persistence import SessionSnapshot, UnknownTimeStateMigrator
 from exact_orb.session.state import (
     RESET_DELTA,
     SessionState,
@@ -54,7 +55,7 @@ _INVARIANT_VIOLATION: Final = "SESSION_SQLITE_INVARIANT_VIOLATION"
 _COMMIT_UNKNOWN: Final = "SESSION_SQLITE_COMMIT_UNKNOWN"
 
 _SESSION_COMPONENT: Final = "session"
-_STATE_PAYLOAD_VERSION: Final = 1
+_STATE_PAYLOAD_VERSION: Final = 2
 _DIALOG_PAYLOAD_VERSION: Final = 1
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _LOGGER = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ class _SqliteBackend:
     db_path: Path
     executor: ThreadPoolExecutor
     busy_timeout_ms: int
+    unknown_time_migrator: UnknownTimeStateMigrator | None
 
     async def run(self, operation: Callable[..., Any], /, *args: Any) -> Any:
         loop = asyncio.get_running_loop()
@@ -520,7 +522,10 @@ def _require_payload_version(value: Any, *, supported: int) -> None:
         raise _AdapterFailure(_PAYLOAD_UNSUPPORTED)
 
 
-def _decode_state_row(row: tuple[Any, ...]) -> SessionState:
+def _decode_state_row(
+    row: tuple[Any, ...],
+    unknown_time_migrator: UnknownTimeStateMigrator | None,
+) -> SessionState:
     if len(row) != 7:
         raise _AdapterFailure(_DATA_CORRUPT)
     (
@@ -533,7 +538,10 @@ def _decode_state_row(row: tuple[Any, ...]) -> SessionState:
         state_json,
     ) = row
 
-    _require_payload_version(payload_version, supported=_STATE_PAYLOAD_VERSION)
+    if type(payload_version) is not int:
+        raise _AdapterFailure(_DATA_CORRUPT)
+    if payload_version not in {1, _STATE_PAYLOAD_VERSION}:
+        raise _AdapterFailure(_PAYLOAD_UNSUPPORTED)
     if type(session_id) is not str or type(state_version) is not int:
         raise _AdapterFailure(_DATA_CORRUPT)
     if type(state_json) is not str:
@@ -542,10 +550,13 @@ def _decode_state_row(row: tuple[Any, ...]) -> SessionState:
     created_at = _micros_to_datetime(created_at_us)
     expires_at = _micros_to_datetime(expires_at_us)
     hard_expires_at = _micros_to_datetime(hard_expires_at_us)
-    try:
-        state = SessionState.model_validate_json(state_json)
-    except ValidationError as exc:
-        raise _AdapterFailure(_DATA_CORRUPT) from exc
+    if payload_version == 1:
+        state = _migrate_state_v1(state_json, unknown_time_migrator)
+    else:
+        try:
+            state = SessionState.model_validate_json(state_json)
+        except ValidationError as exc:
+            raise _AdapterFailure(_DATA_CORRUPT) from exc
 
     if (
         state.session_id != session_id
@@ -556,6 +567,59 @@ def _decode_state_row(row: tuple[Any, ...]) -> SessionState:
     ):
         raise _AdapterFailure(_DATA_CORRUPT)
     return state
+
+
+def _migrate_state_v1(
+    state_json: str,
+    unknown_time_migrator: UnknownTimeStateMigrator | None,
+) -> SessionState:
+    try:
+        payload = json.loads(state_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise _AdapterFailure(_DATA_CORRUPT) from exc
+    if not isinstance(payload, dict):
+        raise _AdapterFailure(_DATA_CORRUPT)
+
+    resolved = payload.get("birth_resolved")
+    birth_input = payload.get("birth_input")
+    if resolved is None:
+        try:
+            return SessionState.model_validate(payload)
+        except ValidationError as exc:
+            raise _AdapterFailure(_DATA_CORRUPT) from exc
+    if not isinstance(resolved, dict) or not isinstance(birth_input, dict):
+        raise _AdapterFailure(_DATA_CORRUPT)
+    if type(resolved.get("time_unknown")) is not bool:
+        raise _AdapterFailure(_DATA_CORRUPT)
+
+    migrated_resolved = dict(resolved)
+    if resolved["time_unknown"]:
+        birth_date = birth_input.get("birth_date")
+        tz_id = resolved.get("tz_id")
+        if not isinstance(birth_date, str) or not isinstance(tz_id, str):
+            raise _AdapterFailure(_DATA_CORRUPT)
+        if unknown_time_migrator is None:
+            raise _AdapterFailure(_MIGRATION_FAILED)
+        try:
+            parsed_birth_date = datetime.strptime(birth_date, "%Y-%m-%d").date()
+            anchor, offset_seconds, domain = unknown_time_migrator(
+                parsed_birth_date,
+                tz_id,
+            )
+            migrated_resolved["utc_datetime"] = anchor
+            migrated_resolved["utc_offset_seconds"] = offset_seconds
+            migrated_resolved["birth_time_domain"] = domain.model_dump(mode="json")
+        except Exception as exc:
+            raise _AdapterFailure(_MIGRATION_FAILED) from exc
+    else:
+        migrated_resolved["birth_time_domain"] = None
+
+    migrated = dict(payload)
+    migrated["birth_resolved"] = migrated_resolved
+    try:
+        return SessionState.model_validate(migrated)
+    except ValidationError as exc:
+        raise _AdapterFailure(_MIGRATION_FAILED) from exc
 
 
 _DIALOG_ADAPTER: Final = TypeAdapter(tuple[DialogTurn, ...])
@@ -602,6 +666,7 @@ def _select_state_row(
 
 
 def _select_live_state(
+    backend: _SqliteBackend,
     connection: sqlite3.Connection,
     session_id: str,
     *,
@@ -610,7 +675,7 @@ def _select_live_state(
     row = _select_state_row(connection, session_id)
     if row is None:
         return SessionAbsent(reason="not_found")
-    state = _decode_state_row(row)
+    state = _decode_state_row(row, backend.unknown_time_migrator)
     if is_expired(state, now=now):
         return SessionAbsent(reason="expired")
     return state
@@ -756,6 +821,7 @@ def _sync_get(
     return _run_connection(
         backend,
         lambda connection: _select_live_state(
+            backend,
             connection,
             session_id,
             now=now,
@@ -775,7 +841,7 @@ def _sync_compare_and_set(
     def operation(
         connection: sqlite3.Connection,
     ) -> _TransactionResult[int | VersionConflict | SessionAbsent]:
-        actual = _select_live_state(connection, session_id, now=now)
+        actual = _select_live_state(backend, connection, session_id, now=now)
         if isinstance(actual, SessionAbsent):
             return _TransactionResult(actual, commit=False)
         if actual.state_version != expected_state_version:
@@ -821,7 +887,7 @@ def _sync_dialog_read(
     def operation(
         connection: sqlite3.Connection,
     ) -> _TransactionResult[tuple[DialogTurn, ...] | SessionAbsent]:
-        state = _select_live_state(connection, session_id, now=now)
+        state = _select_live_state(backend, connection, session_id, now=now)
         if isinstance(state, SessionAbsent):
             return _TransactionResult(state, commit=False)
 
@@ -851,7 +917,7 @@ def _sync_dialog_append(
     def operation(
         connection: sqlite3.Connection,
     ) -> _TransactionResult[None | SessionAbsent]:
-        actual = _select_live_state(connection, session_id, now=now)
+        actual = _select_live_state(backend, connection, session_id, now=now)
         if isinstance(actual, SessionAbsent):
             return _TransactionResult(actual, commit=False)
 
@@ -903,7 +969,7 @@ def _sync_dialog_clear(
     def operation(
         connection: sqlite3.Connection,
     ) -> _TransactionResult[None | SessionAbsent]:
-        actual = _select_live_state(connection, session_id, now=now)
+        actual = _select_live_state(backend, connection, session_id, now=now)
         if isinstance(actual, SessionAbsent):
             return _TransactionResult(actual, commit=False)
 
@@ -936,7 +1002,7 @@ def _sync_touch(
     def operation(
         connection: sqlite3.Connection,
     ) -> _TransactionResult[SessionSnapshot | SessionAbsent]:
-        actual = _select_live_state(connection, session_id, now=now)
+        actual = _select_live_state(backend, connection, session_id, now=now)
         if isinstance(actual, SessionAbsent):
             return _TransactionResult(actual, commit=False)
 
@@ -1403,6 +1469,7 @@ class SqliteSessionPersistence:
         *,
         executor: ThreadPoolExecutor,
         busy_timeout_ms: int = 5_000,
+        unknown_time_migrator: UnknownTimeStateMigrator | None = None,
     ) -> Self:
         timeout = _validate_busy_timeout(busy_timeout_ms)
         path = _validate_db_path(db_path)
@@ -1412,6 +1479,7 @@ class SqliteSessionPersistence:
             db_path=path,
             executor=executor,
             busy_timeout_ms=timeout,
+            unknown_time_migrator=unknown_time_migrator,
         )
         await backend.run(_sync_initialize)
         return cls(backend)

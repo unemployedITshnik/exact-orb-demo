@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from exact_orb.birth import build_birth_time_domain
 from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.ephemeris.types import BodyPosition
 from tests.fixtures.natal_1985 import (
@@ -59,6 +60,10 @@ def test_calculate_natal_labels_cosmogram_bodies_with_natal_technique() -> None:
         REFERENCE["longitude"],
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
+        birth_time_domain=build_birth_time_domain(
+            REFERENCE["datetime_utc"].date(),
+            "UTC",
+        ),
     )
 
     assert chart.bodies

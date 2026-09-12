@@ -189,7 +189,7 @@ async def test_calculation_boundaries_log_full_results_and_events_share_full_key
     spec = _spec()
     resolved = resolved_birth_data()
     key = calculation_key_for(spec, resolved)
-    short_key = key.removeprefix("eo:calc:v1:")[:12]
+    short_key = key.removeprefix("eo:calc:v2:")[:12]
     caplog.set_level(logging.DEBUG, logger="exact_orb.calculation")
 
     with _resolver(

@@ -18,7 +18,7 @@ application-flow, зафиксированным в
 | 000 | `000-build_natal_end_to_end.puml` | Сквозной путь одной операции | `BuildNatalOutcome`; после целевого commit — `ApplicationResult` |
 | 001 | `001-build_natal_positive_cache_miss.puml` | Первое построение, промах кэша | `Success` |
 | 002 | `002-build_natal_cache_hit.puml` | Повтор с теми же данными | `Success`, движок не вызван |
-| 003 | `003-build_cosmogram_time_unknown.puml` | Пустое поле времени | `Success`, `chart_kind = cosmogram` |
+| 003 | `003-build_cosmogram_time_unknown.puml` | Пустое поле времени | `Success`, `chart_kind = cosmogram`, устойчивые аспекты + `time_uncertainty` |
 | 004 | `004-build_natal_input_required.puml` | Неизвестный `place_id`; несуществующее или удвоенное локальное время | `InputRequired` |
 | 005 | `005-build_natal_technical_failures.puml` | Отказ зависимости резолва; отказ движка | `ResolutionUnavailable`, `CalculationFailed` |
 | 006 | `006-build_natal_superseded_cas.puml` | Два конкурентных построения в одной сессии | `Superseded` |

@@ -26,7 +26,11 @@ from exact_orb.session.outcomes import (
     Superseded,
     VersionConflict,
 )
-from exact_orb.session.persistence import SessionPersistence, SessionSnapshot
+from exact_orb.session.persistence import (
+    SessionPersistence,
+    SessionSnapshot,
+    UnknownTimeStateMigrator,
+)
 from exact_orb.session.state import (
     HARD_TTL,
     RESET_DELTA,
@@ -66,6 +70,7 @@ __all__ = [
     "SessionSnapshot",
     "SessionState",
     "SessionStore",
+    "UnknownTimeStateMigrator",
     "StateCommitFailed",
     "StateDelta",
     "StateReadError",

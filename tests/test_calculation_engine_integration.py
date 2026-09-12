@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import logging
 from uuid import UUID
 
 import pytest
 
+from exact_orb.birth import build_birth_time_domain
 from exact_orb.birth.types import ResolvedBirthData
 from exact_orb.calculation.engine import EngineService, NatalTechniqueAdapter
 from exact_orb.calculation.errors import ChartCalculationError
 from exact_orb.calculation.spec import NatalChartSpec
 from exact_orb.engine.charts.natal import calculate_natal
+from exact_orb.engine.ephemeris.types import DEFAULT_BODY_IDS
 from exact_orb.run_context import RunContext
 from tests.fixtures.natal_1985 import REFERENCE
 
@@ -39,11 +41,16 @@ async def test_engine_service_natal_matches_direct_calculate_natal() -> None:
     assert result.chart.bodies["sun"].longitude == pytest.approx(direct.bodies["sun"].longitude)
     assert result.chart.cusps is not None
     assert isinstance(result.chart.warnings, tuple)
+    assert result.chart.time_uncertainty is None
+    assert result.chart.model_dump(mode="json") == direct.model_dump(mode="json")
 
 
-async def test_engine_service_cosmogram_matches_direct_calculate_natal() -> None:
+async def test_engine_service_cosmogram_matches_direct_calculate_natal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="exact_orb.engine")
     spec = NatalChartSpec(chart_kind="cosmogram")
-    resolved = _resolved()
+    resolved = _resolved(time_unknown=True)
     direct = _direct_chart(spec, resolved)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -58,6 +65,36 @@ async def test_engine_service_cosmogram_matches_direct_calculate_natal() -> None
     assert result.chart.house_rulers is None
     assert result.chart.strength is None
     assert isinstance(result.chart.warnings, tuple)
+    assert result.chart.time_uncertainty is not None
+    assert result.chart.time_uncertainty.domain == resolved.birth_time_domain
+
+    published = {
+        frozenset((aspect.from_point.body, aspect.to_point.body)): aspect
+        for aspect in result.chart.aspects or ()
+    }
+    excluded = {
+        frozenset((item.from_point.body, item.to_point.body)): item
+        for item in result.chart.time_uncertainty.excluded_aspects or ()
+    }
+    assert frozenset(("neptune", "pluto")) in published
+    assert published[frozenset(("neptune", "pluto"))].orb == pytest.approx(
+        1.813,
+        abs=1e-3,
+    )
+    assert frozenset(("moon", "jupiter")) in excluded
+    assert tuple(
+        reason.value for reason in excluded[frozenset(("moon", "jupiter"))].reasons
+    ) == ("not_present_for_all_times", "category_changed")
+    excluded_pairs = set(excluded)
+    for configuration in result.chart.configurations or ():
+        assert all(
+            frozenset((edge.from_point.body, edge.to_point.body)) not in excluded_pairs
+            for edge in configuration.aspects
+        )
+
+    assert len(_messages(caplog, "body_calculated")) == 2 * len(DEFAULT_BODY_IDS)
+    assert len(_messages(caplog, "cosmogram_aspect_stability")) == 2
+    assert "point_snapshots" not in "\n".join(_messages(caplog, "component_message"))
 
 
 async def test_engine_service_maps_real_high_latitude_placidus_to_houses_degenerate() -> None:
@@ -157,6 +194,7 @@ def _direct_chart(spec: NatalChartSpec, resolved: ResolvedBirthData):
         rulership=spec.rulership,
         include=frozenset(spec.include),
         near_interception_threshold=spec.near_interception_threshold,
+        birth_time_domain=resolved.birth_time_domain,
     )
 
 
@@ -164,7 +202,13 @@ def _resolved(
     *,
     latitude: float | None = None,
     longitude: float | None = None,
+    time_unknown: bool = False,
 ) -> ResolvedBirthData:
+    domain = (
+        build_birth_time_domain(date(1985, 9, 2), "Europe/Moscow")
+        if time_unknown
+        else None
+    )
     return ResolvedBirthData(
         utc_datetime=REFERENCE["datetime_utc"],
         latitude=REFERENCE["latitude"] if latitude is None else latitude,
@@ -172,7 +216,8 @@ def _resolved(
         tz_id="Europe/Moscow",
         utc_offset_seconds=14400,
         canonical_place="Moscow",
-        time_unknown=False,
+        time_unknown=time_unknown,
+        birth_time_domain=domain,
         warnings=(),
     )
 

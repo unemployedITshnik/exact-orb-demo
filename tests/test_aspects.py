@@ -11,6 +11,10 @@ from pydantic import ValidationError
 
 from exact_orb.engine.aspects import AspectCategory, AspectConfig, PositionedPoint, find_aspects
 from exact_orb.engine.charts.natal import NatalChart, calculate_natal
+from exact_orb.engine.charts.uncertainty import (
+    UnstableAspectReason,
+    find_time_stable_aspects,
+)
 from tests.fixtures.natal_1985 import REFERENCE
 
 
@@ -451,6 +455,76 @@ def test_property_zero_max_orb_returns_no_aspects() -> None:
     assert aspects == []
 
 
+def test_time_stable_aspect_uses_maximum_orb() -> None:
+    snapshots = (
+        _snapshot(0.0, 1.5),
+        _snapshot(0.0, 2.5),
+    )
+
+    stable, excluded = find_time_stable_aspects(snapshots, AspectConfig.natal())
+
+    assert len(stable) == 1
+    assert stable[0].aspect_type.value == "conjunction"
+    assert stable[0].category is AspectCategory.WORKING
+    assert stable[0].orb == pytest.approx(2.5)
+    assert stable[0].applying is None
+    assert excluded == ()
+
+
+def test_time_stability_distinguishes_absence_type_and_category_changes() -> None:
+    config = AspectConfig.natal()
+
+    stable, excluded = find_time_stable_aspects(
+        (_snapshot(0.0, 0.5), _snapshot(0.0, 10.0)),
+        config,
+    )
+    assert stable == ()
+    assert excluded[0].reasons == (
+        UnstableAspectReason.NOT_PRESENT_FOR_ALL_TIMES,
+    )
+    assert excluded[0].includes_no_aspect is True
+
+    stable, excluded = find_time_stable_aspects(
+        (_snapshot(0.0, 29.5), _snapshot(0.0, 59.5)),
+        config,
+    )
+    assert stable == ()
+    assert excluded[0].reasons == (UnstableAspectReason.ASPECT_TYPE_CHANGED,)
+    assert tuple(item.value for item in excluded[0].possible_aspect_types) == (
+        "semisextile",
+        "sextile",
+    )
+
+    stable, excluded = find_time_stable_aspects(
+        (_snapshot(0.0, 0.5), _snapshot(0.0, 2.5)),
+        config,
+    )
+    assert stable == ()
+    assert excluded[0].reasons == (UnstableAspectReason.CATEGORY_CHANGED,)
+    assert tuple(item.value for item in excluded[0].possible_categories) == (
+        "exact",
+        "working",
+    )
+
+
+def test_pair_without_aspect_at_any_time_has_no_diagnostic() -> None:
+    snapshots = (_snapshot(0.0, 10.0), _snapshot(0.0, 11.0))
+
+    stable, excluded = find_time_stable_aspects(snapshots, AspectConfig.natal())
+
+    assert stable == ()
+    assert excluded == ()
+
+
+def test_time_stability_is_independent_of_snapshot_order() -> None:
+    snapshots = (_snapshot(0.0, 1.5), _snapshot(0.0, 2.5))
+
+    first = find_time_stable_aspects(snapshots, AspectConfig.natal())
+    second = find_time_stable_aspects(tuple(reversed(snapshots)), AspectConfig.natal())
+
+    assert first == second
+
+
 def test_low_level_aspect_finder_remains_name_agnostic() -> None:
     aspects = find_aspects(
         [
@@ -482,6 +556,13 @@ def _points(longitudes: list[float]) -> list[PositionedPoint]:
         PositionedPoint(chart="natal", body=f"p{index}", longitude=longitude)
         for index, longitude in enumerate(longitudes)
     ]
+
+
+def _snapshot(left: float, right: float) -> tuple[PositionedPoint, ...]:
+    return (
+        PositionedPoint(chart="natal", body="p0", longitude=left),
+        PositionedPoint(chart="natal", body="p1", longitude=right),
+    )
 
 
 def _aspect_key(aspect) -> tuple[str, str, str]:

@@ -100,6 +100,7 @@ class NatalTechniqueAdapter:
             rulership=spec.rulership,
             include=frozenset(spec.include),
             near_interception_threshold=spec.near_interception_threshold,
+            birth_time_domain=resolved.birth_time_domain,
         )
         return CalculationResult(chart=chart)
 
@@ -284,6 +285,12 @@ def _prevalidate(spec: ChartSpec, resolved: ResolvedBirthData, run_id: str) -> N
         validate_geography(resolved.latitude, resolved.longitude)
     except (TypeError, ValueError):
         raise ChartCalculationError("GEOGRAPHY_INVALID", run_id=run_id) from None
+
+    if spec.chart_kind == "cosmogram":
+        if not resolved.time_unknown or resolved.birth_time_domain is None:
+            raise ChartCalculationError("SPEC_INVALID", run_id=run_id)
+    elif resolved.time_unknown or resolved.birth_time_domain is not None:
+        raise ChartCalculationError("SPEC_INVALID", run_id=run_id)
 
 
 def _validate_result(

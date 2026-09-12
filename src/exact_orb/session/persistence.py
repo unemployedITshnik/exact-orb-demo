@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
@@ -11,6 +11,7 @@ from exact_orb.session.dialog import DialogStore, DialogTurn
 from exact_orb.session.outcomes import SessionAbsent, VersionConflict
 from exact_orb.session.state import SessionState
 from exact_orb.session.store import SessionStore
+from exact_orb.birth.types import BirthTimeDomain
 
 
 class SessionSnapshot(BaseModel):
@@ -20,6 +21,17 @@ class SessionSnapshot(BaseModel):
 
     state: SessionState
     dialog: tuple[DialogTurn, ...]
+
+
+@runtime_checkable
+class UnknownTimeStateMigrator(Protocol):
+    """Birth-owned synchronous seam used only for legacy unknown-time state."""
+
+    def __call__(
+        self,
+        birth_date: date,
+        tz_id: str,
+    ) -> tuple[datetime, int, BirthTimeDomain]: ...
 
 
 @runtime_checkable
@@ -63,4 +75,8 @@ class SessionPersistence(Protocol):
         ...
 
 
-__all__ = ["SessionPersistence", "SessionSnapshot"]
+__all__ = [
+    "SessionPersistence",
+    "SessionSnapshot",
+    "UnknownTimeStateMigrator",
+]

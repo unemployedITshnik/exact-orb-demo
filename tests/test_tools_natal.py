@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
+from exact_orb.birth import build_birth_time_domain
 from exact_orb.tools import NatalTool, NatalToolArgs, ToolRegistry, ToolRequest
 
 from .fixtures.natal_1985 import EXPECTED_BODY_LONGITUDES, REFERENCE
@@ -19,6 +20,7 @@ def _reference_args() -> dict[str, object]:
         "longitude": REFERENCE["longitude"],
         "chart_kind": "natal",
         "house_system": REFERENCE["house_system"],
+        "birth_time_domain": None,
     }
 
 
@@ -29,6 +31,7 @@ def test_natal_tool_args_requires_timezone_aware_datetime() -> None:
             latitude=REFERENCE["latitude"],
             longitude=REFERENCE["longitude"],
             chart_kind="natal",
+            birth_time_domain=None,
         )
 
 
@@ -38,6 +41,7 @@ def test_natal_tool_args_defaults() -> None:
         latitude=REFERENCE["latitude"],
         longitude=REFERENCE["longitude"],
         chart_kind="natal",
+        birth_time_domain=None,
     )
 
     assert args.chart_kind == "natal"
@@ -104,6 +108,10 @@ def test_natal_tool_run_with_reduced_include_produces_cosmogram() -> None:
     tool = NatalTool()
     args = _reference_args()
     args["chart_kind"] = "cosmogram"
+    args["birth_time_domain"] = build_birth_time_domain(
+        date(1985, 9, 2),
+        "Europe/Moscow",
+    )
     args["include"] = ("positions", "aspects", "configurations")
     request = ToolRequest(tool_name="natal", args=args)
 

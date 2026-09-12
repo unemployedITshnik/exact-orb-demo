@@ -73,6 +73,7 @@ def calculate_bodies(
     cusps: tuple[HouseCusp, ...] | None,
     *,
     chart: str,
+    log_details: bool = True,
 ) -> tuple[dict[str, BodyPosition], list[CalculationWarning]]:
     bodies: dict[str, BodyPosition] = {}
     warnings: list[CalculationWarning] = []
@@ -117,13 +118,14 @@ def calculate_bodies(
             zodiac=zodiac_position(longitude_value),
             retflags=retflags,
         )
-        LOGGER.debug(
-            "body_calculated name=%s swe_id=%s house=%s retflags=%s",
-            name,
-            body_id,
-            bodies[name].house,
-            retflags,
-        )
+        if log_details:
+            LOGGER.debug(
+                "body_calculated name=%s swe_id=%s house=%s retflags=%s",
+                name,
+                body_id,
+                bodies[name].house,
+                retflags,
+            )
 
     return bodies, warnings
 

@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 
-from exact_orb.birth.types import ResolvedBirthData
+from exact_orb.birth.types import BirthTimeDomain, ResolvedBirthData, UtcMinuteRange
 from exact_orb.calculation import artifacts as artifacts_module
 from exact_orb.calculation.artifacts import ChartArtifactResolver
 from exact_orb.calculation.chart_contract import calculation_input_from_chart
@@ -25,6 +25,7 @@ from exact_orb.calculation.spec import NatalChartSpec
 from exact_orb.calculation.types import ArtifactNatalChart, ChartArtifact
 from exact_orb.config import EphemerisStatus
 from exact_orb.engine.charts.natal import NatalChart
+from exact_orb.engine.charts.uncertainty import CosmogramTimeUncertainty
 from exact_orb.engine.ephemeris.types import CalculationWarning
 from exact_orb.run_context import RunContext
 
@@ -169,6 +170,7 @@ async def test_invalid_geography_is_typed_before_key_cache_and_engine(
         utc_offset_seconds=10800,
         canonical_place="Moscow",
         time_unknown=False,
+        birth_time_domain=None,
         warnings=(),
     )
     cache = FakeCache()
@@ -447,7 +449,11 @@ async def test_artifact_construction_failure_maps_to_engine_unexpected_without_p
     field: str,
     value: object,
 ) -> None:
-    chart = _raw_chart().model_copy(update={field: value})
+    chart = (
+        _raw_chart(chart_kind="cosmogram")
+        if field == "chart_kind"
+        else _raw_chart().model_copy(update={field: value})
+    )
     result = CalculationResult(chart=chart)
     cache = FakeCache()
     engine = FakeEngine(result)
@@ -1029,6 +1035,16 @@ def _raw_chart(
         aspects=() if "aspects" in included else None,
         configurations=() if "configurations" in included else None,
         strength=None,
+        time_uncertainty=(
+            CosmogramTimeUncertainty(
+                domain=BirthTimeDomain(
+                    ranges=(UtcMinuteRange(first_utc=datetime_utc, count=1),)
+                ),
+                excluded_aspects=() if "aspects" in included else None,
+            )
+            if chart_kind == "cosmogram"
+            else None
+        ),
         warnings=warnings,
     )
 
@@ -1047,6 +1063,7 @@ def _resolved(
         utc_offset_seconds=10800,
         canonical_place="Moscow",
         time_unknown=False,
+        birth_time_domain=None,
         warnings=(),
     )
 

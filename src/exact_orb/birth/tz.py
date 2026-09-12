@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, field_validator
 
-from exact_orb.birth.types import ResolutionWarning
+from exact_orb.birth.types import (
+    BirthTimeDomain,
+    ResolutionWarning,
+    UtcMinuteRange,
+)
 
 
 POSIX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -122,6 +126,63 @@ def local_date_exists(local_date: date, tz_id: str) -> bool:
     return end > start
 
 
+def build_birth_time_domain(
+    local_date: date,
+    tz_id: str,
+) -> BirthTimeDomain | None:
+    """Resolve every supported local minute into one canonical UTC domain."""
+
+    utc_moments: set[datetime] = set()
+    local_midnight = datetime.combine(local_date, time.min)
+    for minute_index in range(24 * 60):
+        local_minute = local_midnight + timedelta(minutes=minute_index)
+        resolution = resolve_historical_tz(local_minute, tz_id)
+        if isinstance(resolution, TzOk):
+            utc_moments.add(resolution.utc_datetime)
+        elif isinstance(resolution, TzAmbiguous):
+            for offset_seconds in resolution.offsets:
+                utc_moments.add(
+                    (local_minute - timedelta(seconds=offset_seconds)).replace(
+                        tzinfo=timezone.utc
+                    )
+                )
+
+    ordered = sorted(utc_moments)
+    if not ordered:
+        return None
+
+    ranges: list[UtcMinuteRange] = []
+    first = ordered[0]
+    count = 1
+    previous = first
+    for moment in ordered[1:]:
+        if moment == previous + timedelta(minutes=1):
+            count += 1
+        else:
+            ranges.append(UtcMinuteRange(first_utc=first, count=count))
+            first = moment
+            count = 1
+        previous = moment
+    ranges.append(UtcMinuteRange(first_utc=first, count=count))
+    return BirthTimeDomain(ranges=tuple(ranges))
+
+
+def resolve_unknown_birth_time_for_migration(
+    local_date: date,
+    tz_id: str,
+) -> tuple[datetime, int, BirthTimeDomain]:
+    """Return current unknown-time facts for the versioned session seam."""
+
+    domain = build_birth_time_domain(local_date, tz_id)
+    if domain is None:
+        raise ValueError("local date has no supported minutes")
+    noon = resolve_historical_tz(datetime.combine(local_date, time(12, 0)), tz_id)
+    anchor = noon if isinstance(noon, TzOk) else resolve_anomaly(noon)
+    if anchor.utc_datetime not in domain:
+        raise ValueError("technical noon anchor is outside birth time domain")
+    return anchor.utc_datetime, anchor.utc_offset_seconds, domain
+
+
 def _load_zone(tz_id: str) -> ZoneInfo:
     try:
         return ZoneInfo(tz_id)
@@ -162,7 +223,9 @@ __all__ = [
     "TzOk",
     "TzResolution",
     "UnknownTimezoneError",
+    "build_birth_time_domain",
     "local_date_exists",
     "resolve_anomaly",
     "resolve_historical_tz",
+    "resolve_unknown_birth_time_for_migration",
 ]

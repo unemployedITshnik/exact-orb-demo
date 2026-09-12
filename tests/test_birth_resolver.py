@@ -59,6 +59,7 @@ async def test_r1_date_time_place_resolves(resolver: BirthDataResolver) -> None:
 
     assert isinstance(result, ResolvedBirthData)
     assert result.time_unknown is False
+    assert result.birth_time_domain is None
     assert result.utc_datetime == datetime(1990, 9, 2, 10, 30, tzinfo=timezone.utc)
     assert result.utc_offset_seconds == 14400
     assert result.canonical_place == "Москва"
@@ -73,6 +74,9 @@ async def test_r2_date_place_without_time_resolves_from_noon(
 
     assert isinstance(result, ResolvedBirthData)
     assert result.time_unknown is True
+    assert result.birth_time_domain is not None
+    assert result.birth_time_domain.minute_count == 1440
+    assert result.utc_datetime in result.birth_time_domain
     assert result.utc_datetime == datetime(1990, 9, 2, 8, 0, tzinfo=timezone.utc)
 
 
@@ -411,6 +415,7 @@ def test_resolved_birth_data_requires_timezone_aware_utc_datetime() -> None:
             utc_offset_seconds=14400,
             canonical_place="Москва",
             time_unknown=False,
+            birth_time_domain=None,
         )
 
 
