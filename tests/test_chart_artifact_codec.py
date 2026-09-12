@@ -11,6 +11,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from exact_orb.birth.types import BirthTimeDomain, UtcMinuteRange
+from exact_orb.calculation.chart_contract import calculation_input_from_chart
 from exact_orb.calculation.codec import (
     ChartArtifactDecodeError,
     decode_chart_artifact,
@@ -24,8 +26,10 @@ from exact_orb.calculation.types import (
     ChartArtifact,
 )
 from exact_orb.config import EphemerisStatus, configure_ephemeris
+from exact_orb.engine.ephemeris.calc import zodiac_position
 from exact_orb.engine.charts.natal import NatalChart, calculate_natal
-from exact_orb.engine.ephemeris.types import CalculationWarning
+from exact_orb.engine.charts.uncertainty import CosmogramTimeUncertainty
+from exact_orb.engine.ephemeris.types import BodyPosition, CalculationWarning
 from tests.conftest import REPO_ROOT
 from tests.fixtures.natal_1985 import REFERENCE
 
@@ -37,9 +41,9 @@ BASE_UTC = datetime(1990, 9, 2, 10, 30, 45, tzinfo=timezone.utc)
 EPHE_FILES = ("sepl_18.se1", "semo_18.se1", "seas_18.se1")
 SENSITIVE_WARNING = "sensitive warning for 55.7558 37.6173 at 1990-09-02"
 
-# baseline: normalized ChartArtifact schema + vendored ephe/*.se1; recalculate
-# only for an intentional ephemeris or serialized-schema update.
-NATAL_ARTIFACT_JSON_BASELINE_SHA256 = "06eb12e35a3863f8b0cbeb733f5ca601ff526b5caf0b92cf40152b166a91bb49"
+# baseline: normalized ChartArtifact with ADR-0033 unified strength systems +
+# vendored ephe/*.se1; recalculate only for an intentional contract update.
+NATAL_ARTIFACT_JSON_BASELINE_SHA256 = "4a4470c47f0b7edec93d891ef48469371a75b990b5144d7480f6aaa36dc131d7"
 
 
 def test_chart_artifact_normalizes_raw_chart_to_artifact_safe_chart() -> None:
@@ -125,6 +129,7 @@ def test_chart_artifact_validates_identity_fields() -> None:
         _artifact(
             chart=chart,
             spec=NatalChartSpec(chart_kind="cosmogram", include=("positions",)),
+            key=KEY_PREFIX + "0" * 64,
         )
 
     with pytest.raises(ValidationError, match="chart block 'positions'"):
@@ -138,11 +143,7 @@ def test_chart_artifact_accepts_key_derived_from_chart_spec_and_version() -> Non
     artifact = _artifact()
 
     expected = calculation_key(
-        CalculationInput(
-            utc_datetime=artifact.chart.datetime_utc,
-            latitude=artifact.chart.latitude,
-            longitude=artifact.chart.longitude,
-        ),
+        calculation_input_from_chart(artifact.chart),
         artifact.spec,
         artifact.calculation_version,
     )
@@ -169,34 +170,109 @@ def test_encode_returns_deterministic_gzip_bytes_with_utf8_json_payload() -> Non
 
 
 def test_reference_natal_artifact_json_matches_normalized_schema_baseline() -> None:
-    configure_ephemeris(REPO_ROOT / "ephe", selena_method="true_perigee")
-    chart = calculate_natal(
-        REFERENCE["datetime_utc"],
-        REFERENCE["latitude"],
-        REFERENCE["longitude"],
-        chart_kind="natal",
-        house_system=REFERENCE["house_system"],
-    )
-    spec = NatalChartSpec(chart_kind="natal")
-    version = "baseline-version"
-    artifact = ChartArtifact(
-        calculation_key=calculation_key(
-            CalculationInput(
-                utc_datetime=chart.datetime_utc,
-                latitude=chart.latitude,
-                longitude=chart.longitude,
-            ),
-            spec,
-            version,
-        ),
-        spec=spec,
-        calculation_version=version,
-        chart=chart,
-    )
+    artifact = _reference_artifact()
+    payload = artifact.model_dump(mode="json")
+
+    strength = payload["chart"]["strength"]
+    assert strength["dignity_system"] == "modern"
+    assert strength["dispositor_system"] == "modern"
+    assert strength["dispositors"]["pluto"] == {
+        "body": "pluto",
+        "chain": ["pluto", "pluto"],
+        "steps_to_cycle": 0,
+        "cycle": ["pluto"],
+    }
 
     digest = sha256(artifact.model_dump_json().encode("utf-8")).hexdigest()
 
     assert digest == NATAL_ARTIFACT_JSON_BASELINE_SHA256
+
+
+@pytest.mark.parametrize("mutation", ("missing", "mismatch"))
+def test_decode_rejects_invalid_dispositor_system_metadata(mutation: str) -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    strength = payload["chart"]["strength"]
+    if mutation == "missing":
+        del strength["dispositor_system"]
+    else:
+        strength["dispositor_system"] = "traditional"
+    encoded = gzip.compress(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(encoded)
+
+    assert exc_info.value.reason == "validation"
+
+
+def test_reference_artifact_serializes_only_canonical_point_references() -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    references = [
+        point
+        for aspect in payload["chart"]["aspects"]
+        for point in (aspect["from_point"], aspect["to_point"])
+    ]
+    identifiers = {point["body"] for point in references}
+
+    assert "south_node" in payload["chart"]["bodies"]
+    assert {"true_node", "mean_apog", "pars_fortune"} <= identifiers
+    assert {"south_node", "north_node", "lilith", "pars"}.isdisjoint(identifiers)
+
+
+def test_decode_rejects_unresolved_chart_point_reference() -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    payload["chart"]["aspects"][0]["from_point"]["body"] = "missing_point"
+    encoded = gzip.compress(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(encoded)
+
+    assert exc_info.value.reason == "validation"
+
+
+def test_decode_rejects_south_node_as_relational_endpoint() -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    payload["chart"]["aspects"][0]["from_point"]["body"] = "south_node"
+    encoded = gzip.compress(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(encoded)
+
+    assert exc_info.value.reason == "validation"
+
+
+@pytest.mark.parametrize("mutation", ("edge", "point", "max_orb"))
+def test_decode_rejects_inconsistent_materialized_configuration(
+    mutation: str,
+) -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    configuration = payload["chart"]["configurations"][0]
+
+    if mutation == "edge":
+        configuration["aspects"][0]["orb"] += 0.01
+    elif mutation == "point":
+        role = next(iter(configuration["points"]))
+        configuration["points"][role] = {"chart": "natal", "body": "venus"}
+    else:
+        configuration["max_orb"] += 0.01
+
+    encoded = gzip.compress(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(encoded)
+
+    assert exc_info.value.reason == "validation"
 
 
 def test_codec_round_trip_returns_equal_new_instance() -> None:
@@ -308,6 +384,62 @@ def test_decode_validation_error_text_does_not_expose_payload_or_pydantic_detail
     assert "ValidationError" not in text
 
 
+def test_decode_rejects_legacy_cosmogram_without_time_uncertainty() -> None:
+    artifact = _artifact(chart=_raw_chart(chart_kind="cosmogram"))
+    payload = _decoded_json_payload(artifact)
+    del payload["chart"]["time_uncertainty"]
+    legacy = gzip.compress(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        compresslevel=6,
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(legacy)
+
+    assert exc_info.value.reason == "validation"
+
+
+def test_cosmogram_rejects_unresolved_uncertainty_endpoint_with_path() -> None:
+    payload = _cosmogram_payload_with_diagnostic()
+    payload["time_uncertainty"]["excluded_aspects"][0]["to_point"][
+        "body"
+    ] = "missing"
+
+    with pytest.raises(
+        ValidationError,
+        match=r"time_uncertainty\.excluded_aspects\[0\]\.to_point",
+    ):
+        NatalChart.model_validate(payload)
+
+
+def test_cosmogram_rejects_duplicate_uncertainty_pair() -> None:
+    payload = _cosmogram_payload_with_diagnostic()
+    diagnostic = payload["time_uncertainty"]["excluded_aspects"][0]
+    payload["time_uncertainty"]["excluded_aspects"].append(diagnostic)
+
+    with pytest.raises(ValidationError, match="duplicates an excluded pair"):
+        NatalChart.model_validate(payload)
+
+
+def test_cosmogram_rejects_diagnostic_for_published_pair() -> None:
+    payload = _cosmogram_payload_with_diagnostic()
+    payload["aspects"] = [
+        {
+            "from_point": {"chart": "natal", "body": "sun"},
+            "to_point": {"chart": "natal", "body": "moon"},
+            "aspect_type": "conjunction",
+            "exact_angle": 0.0,
+            "orb": 0.5,
+            "category": "exact",
+            "applying": None,
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="duplicates a published aspect pair"):
+        NatalChart.model_validate(payload)
+
+
 def test_decode_rejects_legacy_duplicate_top_level_fields() -> None:
     artifact = _artifact()
     payload = _decoded_json_payload(artifact)
@@ -350,13 +482,23 @@ def _raw_chart(
         ),
         selena_method="true_perigee",
         bodies={},
-        cusps=(),
-        angles={},
+        cusps=() if chart_kind == "natal" else None,
+        angles={} if chart_kind == "natal" else None,
         house_rulers=None,
         interceptions=None,
         aspects=None,
         configurations=None,
         strength=None,
+        time_uncertainty=(
+            CosmogramTimeUncertainty(
+                domain=BirthTimeDomain(
+                    ranges=(UtcMinuteRange(first_utc=BASE_UTC, count=1),)
+                ),
+                excluded_aspects=None,
+            )
+            if chart_kind == "cosmogram"
+            else None
+        ),
         warnings=warnings if warnings is not None else (_warning(SENSITIVE_WARNING),),
     )
 
@@ -374,11 +516,7 @@ def _artifact(
         include=("houses", "positions") if chart.chart_kind == "natal" else ("positions",),
     )
     key = key or calculation_key(
-        CalculationInput(
-            utc_datetime=chart.datetime_utc,
-            latitude=chart.latitude,
-            longitude=chart.longitude,
-        ),
+        calculation_input_from_chart(chart),
         spec,
         version,
     )
@@ -390,8 +528,71 @@ def _artifact(
     )
 
 
+def _reference_artifact() -> ChartArtifact:
+    configure_ephemeris(REPO_ROOT / "ephe", selena_method="true_perigee")
+    chart = calculate_natal(
+        REFERENCE["datetime_utc"],
+        REFERENCE["latitude"],
+        REFERENCE["longitude"],
+        chart_kind="natal",
+        house_system=REFERENCE["house_system"],
+    )
+    spec = NatalChartSpec(chart_kind="natal")
+    version = "baseline-version"
+    return ChartArtifact(
+        calculation_key=calculation_key(
+            calculation_input_from_chart(chart),
+            spec,
+            version,
+        ),
+        spec=spec,
+        calculation_version=version,
+        chart=chart,
+    )
+
+
 def _warning(message: str) -> CalculationWarning:
     return CalculationWarning(source="fixture", message=message, retflags=None)
+
+
+def _cosmogram_payload_with_diagnostic() -> dict[str, Any]:
+    payload = _raw_chart(chart_kind="cosmogram").model_dump(mode="json")
+    payload["bodies"] = {
+        "sun": _body("sun", 10.0).model_dump(mode="json"),
+        "moon": _body("moon", 10.5).model_dump(mode="json"),
+    }
+    payload["aspects"] = []
+    payload["configurations"] = []
+    payload["time_uncertainty"]["excluded_aspects"] = [
+        {
+            "from_point": {"chart": "natal", "body": "sun"},
+            "to_point": {"chart": "natal", "body": "moon"},
+            "reasons": ["not_present_for_all_times"],
+            "includes_no_aspect": True,
+            "possible_aspect_types": ["conjunction"],
+            "possible_categories": ["exact"],
+        }
+    ]
+    return payload
+
+
+def _body(name: str, longitude: float) -> BodyPosition:
+    return BodyPosition(
+        name=name,
+        chart="natal",
+        source="swisseph",
+        swe_id=0,
+        longitude=longitude,
+        latitude=0.0,
+        distance=1.0,
+        longitude_speed=1.0,
+        latitude_speed=0.0,
+        distance_speed=0.0,
+        retrograde=False,
+        house=None,
+        zodiac=zodiac_position(longitude),
+        retflags=0,
+    )
 
 
 def _decoded_json_payload(artifact: ChartArtifact) -> dict[str, Any]:

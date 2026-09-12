@@ -62,6 +62,11 @@ EXPECTED_CANONICAL_JSON = (
 EXPECTED_VERSION = (
     "eo:calcver:v1:f2f5d3d9975068f9e28c176b18ecafe9b38d2f2b6b076d83a053694e936845cc"
 )
+# Captured before ADR-0032 and unchanged by ADR-0033; both implementations
+# change engine methods, not AspectConfig/ConfigurationConfig/StrengthConfig.
+UNCHANGED_PROFILES_DIGEST = (
+    "69629f0c755c3a2e74b34d6b9d6b492fba98d2cdfaad00d1b8cb4d89a73dfce7"
+)
 
 
 def test_record_has_stable_golden_fingerprint() -> None:
@@ -144,12 +149,34 @@ def test_collector_reads_engine_version_at_call_time(
     _stable_runtime(monkeypatch, tmp_path)
     before = _record_for(ephe)
 
-    monkeypatch.setattr(version_module.engine_module, "ENGINE_VERSION", "2")
+    changed_engine_version = f"{before.engine_version}-changed"
+    monkeypatch.setattr(
+        version_module.engine_module,
+        "ENGINE_VERSION",
+        changed_engine_version,
+    )
     after = _record_for(ephe)
 
-    assert before.engine_version == "1"
-    assert after.engine_version == "2"
+    assert after.engine_version == changed_engine_version
     assert calculation_version_of(after) != calculation_version_of(before)
+
+
+def test_adr_0033_bumps_only_engine_version_without_changing_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ephe = _ephemeris_directory(tmp_path / "ephe", {})
+    _stable_runtime(monkeypatch, tmp_path)
+
+    record = _record_for(ephe)
+    previous = record.model_copy(update={"engine_version": "4"})
+
+    assert record.engine_version == "5"
+    assert record.profiles_digest == UNCHANGED_PROFILES_DIGEST
+    assert record.model_dump(exclude={"engine_version"}) == previous.model_dump(
+        exclude={"engine_version"}
+    )
+    assert calculation_version_of(record) != calculation_version_of(previous)
 
 
 def test_collector_reads_default_profiles_at_call_time(

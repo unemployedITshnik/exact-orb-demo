@@ -140,6 +140,17 @@ package "exact_orb.birth" as birth {
     +message: str
   }
 
+  class UtcMinuteRange <<Pydantic>> {
+    +first_utc: datetime
+    +count: int
+  }
+
+  class BirthTimeDomain <<Pydantic>> {
+    +ranges: tuple[UtcMinuteRange]
+    +minute_count: int
+    +iter_utc(): Iterator[datetime]
+  }
+
   class ResolvedBirthData <<Pydantic>> {
     +utc_datetime: datetime
     +latitude: float
@@ -148,6 +159,7 @@ package "exact_orb.birth" as birth {
     +utc_offset_seconds: int
     +canonical_place: str
     +time_unknown: bool
+    +birth_time_domain: BirthTimeDomain or None
     +warnings: tuple[ResolutionWarning]
   }
 
@@ -207,6 +219,8 @@ package "exact_orb.birth" as birth {
 }
 
 ResolvedBirthData *-- ResolutionWarning
+ResolvedBirthData *-- BirthTimeDomain
+BirthTimeDomain *-- UtcMinuteRange
 PlaceResolution ..> ResolvedPlace : union
 PlaceResolution ..> PlaceNotFound : union
 LocalPlaceCatalog ..|> PlaceCatalog
@@ -243,6 +257,7 @@ package "exact_orb.calculation" as calculation {
     +utc_datetime: datetime
     +latitude: float
     +longitude: float
+    +birth_time_domain_digest: str or None
   }
 
   interface CalculationCache <<Protocol>> {
@@ -560,7 +575,6 @@ package "exact_orb.engine.aspects" as aspects {
     +categories: CategoryThresholds
     +natal_orbs: AspectOrbSet
     +transit_orbs: AspectOrbSet
-    +point_aliases: dict[str, str]
     +natal_points: tuple[str]
     +active_orbs: AspectOrbSet
     +natal(max_orb: float): AspectConfig
@@ -575,6 +589,14 @@ Aspect --> AspectCategory
 AspectConfig *-- CategoryThresholds
 AspectConfig *-- AspectOrbSet
 AspectOrbSet --> AspectType
+
+note right of AspectConfig
+  lunar-node axis relations:
+  true_node is the sole graph point;
+  south_node remains a derived
+  BodyPosition and is forbidden
+  in relation result aggregates
+end note
 
 ' =========================
 ' ENGINE: CONFIGURATIONS
@@ -644,6 +666,13 @@ AspectGraph --> PointKey
 AspectGraph *-- Aspect
 AspectGraph *-- AspectPointRef
 AspectGraph --> AspectType
+
+note right of Configuration
+  aspects materializes complete Aspect values
+  from NatalChart.aspects; roles, endpoints,
+  topology, max_orb, chart and recursive
+  contains are aggregate invariants
+end note
 
 ' =========================
 ' ENGINE: STRENGTH
@@ -787,6 +816,7 @@ package "exact_orb.engine.strength" as strength {
 
   class NatalStrength <<Pydantic>> {
     +dignity_system: Literal
+    +dispositor_system: Literal
     +planets: dict[str, PlanetStrength]
     +balance: ChartBalance
     +dispositors: dict[str, DispositorChain]
@@ -829,6 +859,13 @@ NatalStrength *-- DegreeFlag
 NatalStrength *-- InterceptionSummary
 StrengthConfig --> HouseType
 
+note right of StrengthConfig
+  dignity_system is the single selector
+  for dignities and linear dispositors.
+  ChartSpec.rulership remains house-only;
+  combined is not a DispositorChain system.
+end note
+
 ' =========================
 ' ENGINE: CHARTS
 ' =========================
@@ -870,8 +907,40 @@ package "exact_orb.engine.charts" as charts {
     +aspects: tuple[Aspect]
     +configurations: tuple[Configuration]
     +strength: NatalStrength
+    +time_uncertainty: CosmogramTimeUncertainty or None
     +warnings: tuple[CalculationWarning]
   }
+
+  enum UnstableAspectReason {
+    not_present_for_all_times
+    aspect_type_changed
+    category_changed
+  }
+
+  class UnstableAspect <<Pydantic>> {
+    +from_point: AspectPointRef
+    +to_point: AspectPointRef
+    +reasons: tuple[UnstableAspectReason]
+    +includes_no_aspect: bool
+    +possible_aspect_types: tuple[AspectType]
+    +possible_categories: tuple[AspectCategory]
+  }
+
+  class CosmogramTimeUncertainty <<Pydantic>> {
+    +domain: BirthTimeDomain
+    +excluded_aspects: tuple[UnstableAspect] or None
+  }
+
+  note right of NatalChart
+    one point namespace:
+    mapping key = point.name;
+    every AspectPointRef resolves
+    in bodies or angles, including
+    configurations and contains;
+    configurations requires aspects,
+    whose list is canonical for all
+    materialized configuration edges
+  end note
 
   class TransitLocation <<Pydantic>> {
     +latitude: float
@@ -973,6 +1042,10 @@ NatalChart *-- Interception
 NatalChart *-- Aspect
 NatalChart *-- Configuration
 NatalChart *-- NatalStrength
+NatalChart *-- CosmogramTimeUncertainty
+CosmogramTimeUncertainty *-- BirthTimeDomain
+CosmogramTimeUncertainty *-- UnstableAspect
+UnstableAspect --> UnstableAspectReason
 NatalChart *-- CalculationWarning
 TransitBodyPosition *-- ZodiacPosition
 TransitAspect *-- TransitPointRef

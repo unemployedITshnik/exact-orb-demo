@@ -27,16 +27,7 @@ from exact_orb.research.models import (
 
 
 _LOGGER = logging.getLogger(__name__)
-_ALIAS_TO_RAW_POINT = {
-    "north_node": "true_node",
-    "lilith": "mean_apog",
-    "pars": "pars_fortune",
-}
 _RESEARCH_ANGLES = frozenset({"asc", "mc"})
-
-
-def _raw_point(value: str) -> str:
-    return _ALIAS_TO_RAW_POINT.get(value, value)
 
 
 def _category_value(value: object) -> object:
@@ -75,8 +66,8 @@ def project_chart_features(artifact: ChartArtifact, /) -> ChartFeatures:
             if chart.aspects is None
             else tuple(
                 AspectFeature(
-                    from_point=_raw_point(aspect.from_point.body),
-                    to_point=_raw_point(aspect.to_point.body),
+                    from_point=aspect.from_point.body,
+                    to_point=aspect.to_point.body,
                     aspect_type=_category_value(aspect.aspect_type),
                     category=_category_value(aspect.category),
                 )
@@ -93,7 +84,7 @@ def project_chart_features(artifact: ChartArtifact, /) -> ChartFeatures:
                     points=tuple(
                         ConfigurationPointFeature(
                             role=role,
-                            point=_raw_point(point.body),
+                            point=point.body,
                         )
                         for role, point in configuration.points.items()
                     ),

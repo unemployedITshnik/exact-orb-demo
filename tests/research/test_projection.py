@@ -20,8 +20,12 @@ from exact_orb.engine.aspects import (
     AspectPointRef,
     AspectType as EngineAspectType,
 )
-from exact_orb.engine.aspects.types import DEFAULT_POINT_ALIASES
 from exact_orb.engine.charts import natal as natal_module
+from exact_orb.engine.charts.uncertainty import (
+    CosmogramTimeUncertainty,
+    UnstableAspect,
+    UnstableAspectReason,
+)
 from exact_orb.engine.configurations.patterns import common as configuration_common
 from exact_orb.engine.configurations.types import (
     Configuration,
@@ -204,6 +208,7 @@ def _bucket(state: EngineBalanceState, score: float) -> BalanceBucket:
 def _strength() -> NatalStrength:
     return NatalStrength(
         dignity_system="modern",
+        dispositor_system="modern",
         planets={
             "sun": _planet(
                 "sun", "Aries", status=EngineDignityStatus.EXALTATION,
@@ -251,19 +256,41 @@ def _strength() -> NatalStrength:
     )
 
 
-def rich_artifact(*, aliases: bool = True) -> ChartArtifact:
-    node = "north_node" if aliases else "true_node"
-    lilith = "lilith" if aliases else "mean_apog"
-    pars = "pars" if aliases else "pars_fortune"
+def rich_artifact() -> ChartArtifact:
+    configuration_aspects = (
+        _aspect(
+            "mean_apog",
+            "pars_fortune",
+            aspect_type=EngineAspectType.SEXTILE,
+            category=EngineAspectCategory.EXACT,
+        ),
+        _aspect(
+            "true_node",
+            "mean_apog",
+            aspect_type=EngineAspectType.QUINCUNX,
+            category=EngineAspectCategory.WORKING,
+        ),
+        _aspect(
+            "true_node",
+            "pars_fortune",
+            aspect_type=EngineAspectType.QUINCUNX,
+            category=EngineAspectCategory.EXACT,
+        ),
+    )
     aspects = (
-        _aspect(node, "asc", aspect_type=EngineAspectType.TRINE, category=EngineAspectCategory.EXACT),
+        _aspect("true_node", "asc", aspect_type=EngineAspectType.TRINE, category=EngineAspectCategory.EXACT),
         _aspect("mc", "vertex", aspect_type=EngineAspectType.SQUARE, category=EngineAspectCategory.WORKING),
+        *configuration_aspects,
     )
     configuration = Configuration(
-        type=EngineConfigurationType.T_SQUARE,
-        points={"base_2": _ref(pars), "apex": _ref(node), "base_1": _ref(lilith)},
-        aspects=aspects,
-        max_orb=2.5,
+        type=EngineConfigurationType.YOD,
+        points={
+            "base_2": _ref("pars_fortune"),
+            "apex": _ref("true_node"),
+            "base_1": _ref("mean_apog"),
+        },
+        aspects=configuration_aspects,
+        max_orb=1.25,
         category=EngineConfigurationCategory.TIGHT,
         chart="natal",
         element="fire",
@@ -273,6 +300,7 @@ def rich_artifact(*, aliases: bool = True) -> ChartArtifact:
         update={
             "bodies": {
                 "true_node": _body("true_node", "Aries", house=3, retrograde=True, longitude=15),
+                "south_node": _body("south_node", "Libra", house=9, retrograde=True, longitude=195),
                 "sun": _body("sun", "Leo", house=1, longitude=125),
                 "moon": _body("moon", "Cancer", house=4, longitude=95),
                 "mean_apog": _body("mean_apog", "Scorpio", house=8, longitude=225),
@@ -296,6 +324,7 @@ def expected_features() -> ChartFeatures:
         chart_kind="natal",
         bodies=(
             BodyFeature(point="true_node", sign="Aries", house=3, retrograde=True),
+            BodyFeature(point="south_node", sign="Libra", house=9, retrograde=True),
             BodyFeature(point="sun", sign="Leo", house=1, retrograde=False),
             BodyFeature(point="moon", sign="Cancer", house=4, retrograde=False),
             BodyFeature(point="mean_apog", sign="Scorpio", house=8, retrograde=False),
@@ -308,10 +337,28 @@ def expected_features() -> ChartFeatures:
         aspects=(
             AspectFeature(from_point="true_node", to_point="asc", aspect_type="trine", category="exact"),
             AspectFeature(from_point="mc", to_point="vertex", aspect_type="square", category="working"),
+            AspectFeature(
+                from_point="mean_apog",
+                to_point="pars_fortune",
+                aspect_type="sextile",
+                category="exact",
+            ),
+            AspectFeature(
+                from_point="true_node",
+                to_point="mean_apog",
+                aspect_type="quincunx",
+                category="working",
+            ),
+            AspectFeature(
+                from_point="true_node",
+                to_point="pars_fortune",
+                aspect_type="quincunx",
+                category="exact",
+            ),
         ),
         configurations=(
             ConfigurationFeature(
-                configuration_type="t_square",
+                configuration_type="yod",
                 category="tight",
                 points=(
                     ConfigurationPointFeature(role="base_2", point="pars_fortune"),
@@ -346,6 +393,7 @@ def test_rich_artifact_projects_to_exact_literal_features_without_mutation() -> 
     projected = project_chart_features(source)
     assert projected == expected_features()
     assert source.model_dump(mode="python") == before
+    assert all("dispositor" not in field for field in ChartFeatures.model_fields)
     assert all(
         getattr(projected, family)
         for family in (
@@ -353,17 +401,6 @@ def test_rich_artifact_projects_to_exact_literal_features_without_mutation() -> 
             "strengths", "balance", "lunar_phase",
         )
     )
-
-
-def test_alias_and_raw_engine_points_project_identically() -> None:
-    aliased = project_chart_features(rich_artifact(aliases=True))
-    raw = project_chart_features(rich_artifact(aliases=False))
-    assert aliased.aspects == raw.aspects
-    assert aliased.configurations == raw.configurations
-    serialized = aliased.model_dump(mode="json")
-    assert "north_node" not in str(serialized)
-    assert "lilith" not in str(serialized)
-    assert "'pars'" not in str(serialized)
 
 
 def test_only_asc_and_mc_get_angle_features_while_vertex_remains_relational() -> None:
@@ -375,6 +412,23 @@ def test_only_asc_and_mc_get_angle_features_while_vertex_remains_relational() ->
         for endpoint in (aspect.from_point, aspect.to_point)
     }
     assert {"asc", "mc", "vertex"} <= endpoints
+
+
+def test_south_node_projects_only_as_a_body_feature() -> None:
+    projected = project_chart_features(rich_artifact())
+    relational_points = {
+        endpoint.value
+        for aspect in projected.aspects
+        for endpoint in (aspect.from_point, aspect.to_point)
+    }
+    relational_points.update(
+        point.point.value
+        for configuration in projected.configurations
+        for point in configuration.points
+    )
+
+    assert any(body.point.value == "south_node" for body in projected.bodies)
+    assert "south_node" not in relational_points
 
 
 def test_none_and_computed_empty_families_remain_distinct() -> None:
@@ -507,6 +561,40 @@ def test_cosmogram_keeps_house_absent_and_does_not_invent_house_families() -> No
     assert projected.bodies[0].house is None
     assert projected.angles is None
     assert projected.dignities is projected.strengths is projected.balance is None
+
+
+def test_cosmogram_projection_does_not_restore_excluded_aspect() -> None:
+    base = raw_chart(chart_kind="cosmogram")
+    diagnostic = UnstableAspect(
+        from_point=AspectPointRef(chart="natal", body="sun"),
+        to_point=AspectPointRef(chart="natal", body="moon"),
+        reasons=(UnstableAspectReason.NOT_PRESENT_FOR_ALL_TIMES,),
+        includes_no_aspect=True,
+        possible_aspect_types=(EngineAspectType.CONJUNCTION,),
+        possible_categories=(EngineAspectCategory.EXACT,),
+    )
+    chart = natal_module.NatalChart.model_validate(
+        {
+            **base.model_dump(),
+            "bodies": {
+                "sun": _body("sun", "Aries", house=None),
+                "moon": _body("moon", "Aries", house=None),
+            },
+            "aspects": (),
+            "configurations": (),
+            "time_uncertainty": CosmogramTimeUncertainty(
+                domain=base.time_uncertainty.domain,
+                excluded_aspects=(diagnostic,),
+            ),
+        }
+    )
+
+    projected = project_chart_features(
+        artifact(spec=chart_spec(chart_kind="cosmogram"), chart=chart)
+    )
+
+    assert projected.aspects == ()
+    assert projected.configurations == ()
 
 
 def _all_values(value: object):
@@ -714,7 +802,7 @@ def test_allowed_categorical_changes_change_projection() -> None:
         update={"chart": chart.model_copy(update={"aspects": (chart.aspects[0].model_copy(update={"category": EngineAspectCategory.BACKGROUND}), chart.aspects[1])})}
     )
     config_variant = source.model_copy(
-        update={"chart": chart.model_copy(update={"configurations": (chart.configurations[0].model_copy(update={"type": EngineConfigurationType.YOD}),)})}
+        update={"chart": chart.model_copy(update={"configurations": (chart.configurations[0].model_copy(update={"type": EngineConfigurationType.T_SQUARE}),)})}
     )
     planets = {
         key: planet.model_copy(
@@ -759,10 +847,6 @@ def _enum_values(enum_type: type) -> set[str]:
     return {item.value for item in enum_type}
 
 
-def _raw_point(name: str) -> str:
-    return {value: key for key, value in DEFAULT_POINT_ALIASES.items()}.get(name, name)
-
-
 def test_engine_closed_vocabularies_have_not_drifted() -> None:
     assert set(get_args(ChartKind)) == {"natal", "cosmogram"}
     assert _enum_values(EngineAspectType) == _enum_values(AspectType)
@@ -777,22 +861,17 @@ def test_engine_closed_vocabularies_have_not_drifted() -> None:
     assert set(ZODIAC_SIGNS) == _enum_values(ZodiacSign)
 
 
-def test_engine_points_and_alias_direction_have_not_drifted() -> None:
+def test_engine_and_research_point_vocabularies_have_not_drifted() -> None:
     body_points = _enum_values(type(next(iter(BODY_FEATURE_POINTS))))
     relational = _enum_values(type(next(iter(RELATIONAL_POINTS))))
     assert set(DEFAULT_BODY_IDS) <= body_points
     assert {"south_node", "pars_fortune", "selena"} <= body_points
     natal_source = inspect.getsource(natal_module._add_derived_points)
     assert all(f'"{name}"' in natal_source for name in ("south_node", "pars_fortune", "selena"))
-    assert {_raw_point(name) for name in AspectConfig().natal_points} == relational
-    assert {_raw_point(name) for name in ConfigurationConfig().points} <= relational
-    assert set(DEFAULT_POINT_ALIASES) <= body_points
-    assert set(DEFAULT_POINT_ALIASES.values()).isdisjoint(body_points | relational)
-    assert {value: key for key, value in DEFAULT_POINT_ALIASES.items()} == {
-        "north_node": "true_node",
-        "lilith": "mean_apog",
-        "pars": "pars_fortune",
-    }
+    active_relational = set(AspectConfig().natal_points)
+    assert active_relational == relational - {"south_node"}
+    assert set(ConfigurationConfig().points) <= active_relational
+    assert {"north_node", "lilith", "pars"}.isdisjoint(body_points | relational)
     assert _enum_values(type(next(iter(STRENGTH_POINTS)))) == set(StrengthConfig().planets)
 
 

@@ -71,6 +71,8 @@ def normalize_include(chart_kind: str, include: Iterable[str] | None) -> tuple[I
         raise ValueError('include block "rulers" requires "houses"')
     if "strength" in include_blocks and "houses" not in include_blocks:
         raise ValueError('include block "strength" requires "houses"')
+    if "configurations" in include_blocks and "aspects" not in include_blocks:
+        raise ValueError('include block "configurations" requires "aspects"')
     if kind == "natal" and "houses" not in include_blocks:
         raise ValueError('chart_kind "natal" requires include block "houses"')
     if kind == "cosmogram":

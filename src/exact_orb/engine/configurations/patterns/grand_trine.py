@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from itertools import combinations
 
-from exact_orb.engine.aspects import AspectType
-
 from ..types import Configuration, ConfigurationConfig, ConfigurationType
-from .common import build_configuration, shared_element, sorted_points
+from .common import build_configuration, role_edge_type, shared_element, sorted_points
 
 
 def find(graph, config: ConfigurationConfig) -> list[Configuration]:
     results: list[Configuration] = []
+    trine_type = role_edge_type(
+        ConfigurationType.GRAND_TRINE, "point_1", "point_2"
+    )
 
     for points in combinations(graph.points, 3):
         trines = [
-            graph.aspect_between(left, right, AspectType.TRINE)
+            graph.aspect_between(left, right, trine_type)
             for left, right in combinations(points, 2)
         ]
         if any(aspect is None for aspect in trines):

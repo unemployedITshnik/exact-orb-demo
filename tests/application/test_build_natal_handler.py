@@ -16,7 +16,12 @@ from exact_orb.application.handlers.build_natal import BuildNatalHandler
 from exact_orb.application.results import BuildNatalSuccess
 from exact_orb.birth.places import LocalPlaceCatalog
 from exact_orb.birth.resolver import BirthDataResolver
-from exact_orb.birth.types import BirthInput, ResolvedBirthData
+from exact_orb.birth.types import (
+    BirthInput,
+    BirthTimeDomain,
+    ResolvedBirthData,
+    UtcMinuteRange,
+)
 from exact_orb.calculation.errors import (
     CalculationUnavailableError,
     ChartCalculationError,
@@ -56,7 +61,18 @@ def _birth_input(
 
 
 def _resolved(*, time_unknown: bool = False) -> ResolvedBirthData:
-    return resolved_birth_data().model_copy(update={"time_unknown": time_unknown})
+    resolved = resolved_birth_data()
+    if not time_unknown:
+        return resolved
+    return ResolvedBirthData.model_validate(
+        {
+            **resolved.model_dump(),
+            "time_unknown": True,
+            "birth_time_domain": BirthTimeDomain(
+                ranges=(UtcMinuteRange(first_utc=resolved.utc_datetime, count=1),)
+            ),
+        }
+    )
 
 
 def _real_resolver() -> BirthDataResolver:
@@ -433,6 +449,35 @@ async def test_real_resolver_unknown_time_builds_cosmogram() -> None:
     assert artifacts.received_spec == NatalChartSpec(chart_kind="cosmogram")
     assert artifacts.received_resolved is not None
     assert artifacts.received_resolved.time_unknown is True
+    assert artifacts.received_resolved.birth_time_domain is not None
+
+
+async def test_explicit_noon_and_missing_time_keep_distinct_chart_semantics() -> None:
+    unknown_result, unknown_artifacts = await _handle_with_real_resolver(
+        _birth_input(birth_time=None)
+    )
+    noon_result, noon_artifacts = await _handle_with_real_resolver(
+        _birth_input(birth_time=time(12, 0))
+    )
+
+    assert isinstance(unknown_result, BuildNatalSuccess)
+    assert isinstance(noon_result, BuildNatalSuccess)
+    assert unknown_artifacts.received_resolved is not None
+    assert noon_artifacts.received_resolved is not None
+    assert (
+        unknown_artifacts.received_resolved.utc_datetime
+        == noon_artifacts.received_resolved.utc_datetime
+    )
+    assert unknown_artifacts.received_spec == NatalChartSpec(chart_kind="cosmogram")
+    assert noon_artifacts.received_spec == NatalChartSpec(chart_kind="natal")
+    assert unknown_artifacts.received_resolved.birth_time_domain is not None
+    assert noon_artifacts.received_resolved.birth_time_domain is None
+    assert unknown_result.artifact.chart.time_uncertainty is not None
+    assert noon_result.artifact.chart.time_uncertainty is None
+    assert (
+        unknown_result.artifact.calculation_key
+        != noon_result.artifact.calculation_key
+    )
 
 
 async def test_real_resolver_invalid_place_short_circuits() -> None:

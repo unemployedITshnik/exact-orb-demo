@@ -12,11 +12,21 @@ from itertools import combinations
 from exact_orb.engine.aspects import AspectType
 
 from ..types import Configuration, ConfigurationConfig, ConfigurationType
-from .common import build_configuration, sorted_points
+from .common import (
+    TRAPEZE_REMAINING_EDGE_TYPE_COUNTS,
+    build_configuration,
+    role_edge_type,
+    sorted_points,
+)
 
 
 def find(graph, config: ConfigurationConfig) -> list[Configuration]:
     results: list[Configuration] = []
+    opposition_type = role_edge_type(
+        ConfigurationType.TRAPEZE, "opposition_1", "opposition_2"
+    )
+    trine_count = TRAPEZE_REMAINING_EDGE_TYPE_COUNTS[AspectType.TRINE]
+    sextile_count = TRAPEZE_REMAINING_EDGE_TYPE_COUNTS[AspectType.SEXTILE]
 
     for points in combinations(graph.points, 4):
         opposition_edges = []
@@ -24,14 +34,18 @@ def find(graph, config: ConfigurationConfig) -> list[Configuration]:
         sextile_edges = []
 
         for left, right in combinations(points, 2):
-            if (aspect := graph.aspect_between(left, right, AspectType.OPPOSITION)) is not None:
+            if (aspect := graph.aspect_between(left, right, opposition_type)) is not None:
                 opposition_edges.append((left, right, aspect))
             if (aspect := graph.aspect_between(left, right, AspectType.TRINE)) is not None:
                 trine_edges.append(aspect)
             if (aspect := graph.aspect_between(left, right, AspectType.SEXTILE)) is not None:
                 sextile_edges.append(aspect)
 
-        if len(opposition_edges) != 1 or len(trine_edges) != 2 or len(sextile_edges) != 3:
+        if (
+            len(opposition_edges) != 1
+            or len(trine_edges) != trine_count
+            or len(sextile_edges) != sextile_count
+        ):
             continue
 
         opposition_1, opposition_2, opposition = opposition_edges[0]

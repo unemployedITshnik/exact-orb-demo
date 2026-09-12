@@ -112,13 +112,13 @@ async def test_async_boundary_logs_full_result(
         request={"input": "small"},
         call=call,
         result_message_type="LargeResult",
-        result_calculation_key=lambda value: "eo:calc:v1:full-key",
+        result_calculation_key=lambda value: "eo:calc:v2:full-key",
     )
 
     assert returned is result
     assert len(caplog.records) == 2
     outgoing = caplog.records[1].getMessage()
-    assert "calculation_key=eo:calc:v1:full-key" in outgoing
+    assert "calculation_key=eo:calc:v2:full-key" in outgoing
     assert "payload_mode=full" in outgoing
     assert "message_type=LargeResult" in outgoing
     assert json.loads(outgoing.partition(" message=")[2]) == {

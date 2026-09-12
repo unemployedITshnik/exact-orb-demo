@@ -154,28 +154,24 @@ STRENGTH_POINTS = {
 RELATIONAL_POINTS = BODY_FEATURE_POINTS ∪ {asc, mc, vertex}
 ```
 
-`RELATIONAL_POINTS` совпадает с `AspectConfig.natal_points` после канонизации
-и содержит ровно те точки, которые могут стать концом аспекта.
+`RELATIONAL_POINTS` — закрытый vocabulary persisted schema v1. Активный набор
+новых отношений равен `RELATIONAL_POINTS − {south_node}` и в точности
+совпадает с `AspectConfig.natal_points`. `south_node` остаётся допустимым enum
+value только для чтения исторических v1-записей прежней
+`CalculationVersion`.
 
-**У точки ровно одно каноническое написание.** `_natal_aspect_points` берёт
-долготу по raw-имени, но выпускает `point_aliases.get(name, name)`, поэтому
-при значении по умолчанию аспекты и конфигурации несут `north_node`, `lilith`
-и `pars`, а `bodies` — `true_node`, `mean_apog` и `pars_fortune`. Поскольку
-`point_aliases` — поле конфигурации, при `point_aliases={}` те же аспекты
-придут с raw-именами. Хранение обеих форм означало бы, что одна точка лежит в
-бессрочном корпусе под двумя именами и `GROUP BY` по концу аспекта делит её
-надвое.
+**У точки ровно одно каноническое написание.** По ADR-0029 машинные ссылки
+используют имена `true_node`, `south_node`, `mean_apog`, `pars_fortune` без
+alias-преобразования. По ADR-0030 `true_node` является единственным
+представителем оси в новых отношениях, а `south_node` переносится только как
+`BodyFeature`. `_natal_aspect_points` выпускает имя без преобразования, а
+`AspectConfig.point_aliases` отсутствует.
 
-Поэтому проекция канонизирует к raw-имени тела:
-
-```text
-north_node -> true_node
-lilith     -> mean_apog
-pars       -> pars_fortune
-```
-
-Alias существует только как входное отображение проекции; в поле модели он
-является ошибкой валидации, а не альтернативным написанием.
+Research projection получает уже канонический `ChartArtifact` и переносит
+идентификаторы напрямую. `north_node`, `lilith`, `pars` являются ошибкой
+машинного vocabulary, а не альтернативным входным написанием. Поэтому одна
+точка не может попасть в бессрочный корпус под двумя именами, и `GROUP BY` по
+концу аспекта не разделяет один объект на два значения.
 
 ### 3.4. Остальные vocabulary
 
@@ -220,7 +216,11 @@ trapeze      -> opposition_1, opposition_2, base_1, base_2
 
 Все `DignityFeature` одной записи имеют одинаковый `system`:
 `NatalStrength.dignity_system` задан на карту целиком, поэтому смешанный набор
-engine произвести не может.
+engine произвести не может. По ADR-0033 та же система применяется к
+диспозиторам, а обязательный `NatalStrength.dispositor_system` равен
+`dignity_system`. Research v1 цепочки диспозиторов и взаимные рецепции не
+проецирует; изменение расчётной методики различается через
+`ResearchRecord.calculation_version`, без изменения feature schema.
 
 ## 4. Канонические модели
 
@@ -245,6 +245,18 @@ ResearchRecord {
 `feature_schema_version` имеет один источник истины внутри `ChartFeatures`.
 P5b вправе денормализовать его в индексируемую колонку, но не добавляет второй
 независимый field модели.
+
+ADR-0030 не меняет `feature_schema_version=1`: поля, закрытые enum и digest
+format сохранены, а разная методика состава отношений различается
+`ResearchRecord.calculation_version`. Исторический relational `south_node`
+остаётся валидным v1 value, хотя новая проекция выпускает его только как
+`BodyFeature`.
+
+ADR-0032 также не меняет `feature_schema_version=1`: проекция читает только
+опубликованные устойчивые `NatalChart.aspects` и производные конфигурации,
+не восстанавливает исключённые пары из `bodies` или `time_uncertainty`.
+Диагностический блок не входит в `ChartFeatures`; происхождение чисел и
+методики различается обязательным `ResearchRecord.calculation_version`.
 
 Bounded identifiers имеют длину `1..128` и соответствуют
 `^[A-Za-z0-9][A-Za-z0-9._:/+@~\-]{0,127}$`. `@` и `~` входят в класс потому,
@@ -319,15 +331,17 @@ artifact и не читает часы.
 оставляет одну warning-запись с безопасными `loc` и `type`; входное значение,
 сообщение валидатора и содержимое artifact в диагностические поля не входят.
 
-Перед построением моделей проекция канонизирует имена точек: alias из
-`AspectConfig.point_aliases` заменяется raw-именем тела. Два artifact,
-отличающиеся только настройкой `point_aliases`, дают одинаковые
-`AspectFeature` и `ConfigurationFeature`.
+Перед построением моделей проекция переносит канонические имена точек без
+alias-преобразования. `south_node` сохраняется в семействе `BodyFeature`, но
+новый `NatalChart` не допускает его в аспектах и конфигурациях. Разрешимость и
+семантика оси всех `AspectPointRef` уже проверены контрактом `NatalChart`;
+закрытые Research enums независимо отклоняют значение вне Research v1.
 
 Poisoned-artifact тест проверяет отсутствие запрещённых sentinels в модели и
-сериализации. Отдельный drift suite сравнивает Research vocabulary с engine
-enums и константами, направлением канонизации aliases, derived points,
-`AspectConfig.natal_points`, разбиением `ANGLE_INDICES` на включённые
+сериализации. Отдельный drift suite напрямую сравнивает Research vocabulary с
+engine enums, derived points, активным `AspectConfig.natal_points` без
+исторически допустимого relational `south_node`, `ConfigurationConfig.points`,
+разбиением `ANGLE_INDICES` на включённые
 (`asc`, `mc`) и исключённые углы, восьмифазностью `PHASE_NAMES` и
 configuration roles; одного rich artifact недостаточно для доказательства
 полноты.

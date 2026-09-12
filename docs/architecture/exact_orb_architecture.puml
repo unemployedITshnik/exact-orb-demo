@@ -79,15 +79,19 @@ package "4. BIRTH DATA RESOLUTION" as Birth {
 
   component "<b>Historical timezone resolver</b>\nlocal datetime + tz_id →\noffset and UTC datetime" as TimezoneResolver #DCFCE7
 
+  component "<b>BirthTimeDomain builder</b>\nall local minutes → canonical\nUTC minute ranges" as DomainBuilder #DCFCE7
+
   BirthResolver -[#2563EB]-> PlaceCatalog : resolve place
   BirthResolver -[#2563EB]-> TimezoneResolver : resolve time
+  BirthResolver -[#2563EB]-> DomainBuilder : unknown time
+  DomainBuilder -[#2563EB]-> TimezoneResolver : resolve every minute
 }
 
 
 package "5. CHART ARTIFACTS" as Artifacts {
   component "<b>ChartArtifactResolver</b>\nValidate → key → cache →\nsingle-flight → calculate on miss" as ArtifactResolver #DCFCE7
 
-  component "<b>Calculation key</b>\nCalculationInput + ChartSpec\n+ CalculationVersion" as KeyFactory #DCFCE7
+  component "<b>Calculation key v2</b>\nUTC + coordinates + domain digest\n+ ChartSpec + CalculationVersion" as KeyFactory #DCFCE7
 
   component "<b>CalculationVersion provider</b>\nEngine + swisseph +\nephemeris-data fingerprint" as VersionProvider #DCFCE7
 
@@ -110,7 +114,7 @@ package "6. DETERMINISTIC ENGINE" as Calculation {
 
   component "<b>NatalTechniqueAdapter</b>\nNatalChartSpec → calculate_natal()" as NatalAdapter #DCFCE7
 
-  component "<b>engine/charts</b>\nNatal, cosmogram and transit" as Charts #DCFCE7
+  component "<b>engine/charts</b>\nNatal, all-minute cosmogram\nstability and transit" as Charts #DCFCE7
 
   component "<b>engine/ephemeris</b>\nBodies, houses, angles,\nUTC → Julian Day" as Ephemeris #DCFCE7
 
@@ -229,6 +233,7 @@ AppOrch -[#7E57C2,dashed]-> MessageHandler : MessageCommand [future]
 ' Build natal path: implemented components, application wiring is the next step
 BuildHandler -[#2563EB]-> BirthResolver : BirthInput
 BirthResolver -[#00838F]-> BuildHandler : ResolvedBirthData\n/ typed outcome
+SQLiteSession -[#00838F,dashed]-> DomainBuilder : injected v1 unknown-time\nmigration seam
 BuildHandler -[#2563EB]-> ArtifactResolver : NatalChartSpec\n+ ResolvedBirthData
 ArtifactResolver -[#00838F]-> BuildHandler : ChartArtifact
 BuildHandler -[#2563EB]-> SessionContracts : create StateDelta

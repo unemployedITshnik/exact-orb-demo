@@ -100,9 +100,9 @@ session_id, cookie, IP, run_id
 достоинства, категория силы, баланс,
 номер фазы Луны, chart_kind
 
-Имя точки канонизируется к raw-форме:
-north_node → true_node, lilith → mean_apog,
-pars → pars_fortune.
+Имена точек приходят без преобразования:
+true_node, south_node, mean_apog,
+pars_fortune — единый namespace ADR-0029.
 end note
 
 

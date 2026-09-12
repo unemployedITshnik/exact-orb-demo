@@ -50,6 +50,7 @@ box "РЕЗОЛВ" #D9F9FF
     control "BirthDataResolver" as Resolver
     control "PlaceCatalog" as Places
     control "resolve_historical_tz" as TZ
+    control "build_birth_time_domain" as Domain
 end box
 
 box "АРТЕФАКТЫ" #E8F5E9
@@ -86,10 +87,17 @@ activate Resolver
 Resolver -> Places : lookup(place_id)
 Places --> Resolver : Resolved(lat, lon, tz_id)
 
-Resolver -> TZ : resolve_historical_tz(\nbirth_date, None, tz_id)
+Resolver -> TZ : resolve_historical_tz(\nlocal technical noon, tz_id)
 TZ --> Resolver : TzOk(utc_datetime\nот местного полудня)
 
-Resolver --> Handler : ResolvedBirthData\n(time_unknown = true)
+Resolver -> Domain : build_birth_time_domain(birth_date, tz_id)
+loop 1440 поддерживаемых локальных минут
+    Domain -> TZ : resolve_historical_tz(local minute, tz_id)
+    TZ --> Domain : one UTC / gap / two folds
+end
+Domain --> Resolver : canonical BirthTimeDomain\n(1380 / 1440 / 1500 обычно)
+
+Resolver --> Handler : ResolvedBirthData\n(time_unknown = true, birth_time_domain)
 deactivate Resolver
 
 note over Resolver, TZ
@@ -124,23 +132,32 @@ activate Artifacts
 Artifacts -> Cache : get(key)
 Cache --> Artifacts : None — промах
 
-Artifacts -> Engine : calculate(spec, resolved, run=run)
-Engine -> Swiss : calculate_natal(\nchart_kind = "cosmogram", ...)
-
-Swiss -> Swiss : проверка суточной\nнеоднозначности
-
-note right of Swiss
-Требование ADR-0008, **в коде пока
-отсутствует**: предупреждение при смене
-знака Луны либо знака или директности
-быстрого объекта в пределах суток.
-
-Критерий проверяем тестом; обобщённая
-формулировка «существенно неоднозначно»
-запрещена.
+note right of Artifacts
+key = eo:calc:v2:sha256(...)
+CalculationInput содержит digest
+канонического BirthTimeDomain.
 end note
 
-Swiss --> Engine : NatalChart\n(chart_kind = "cosmogram",\ncusps = None, angles = None,\nwarnings = [moon_sign_change])
+Artifacts -> Engine : calculate(spec, resolved, run=run)
+Engine -> Swiss : calculate_natal(\nchart_kind = "cosmogram",\nbirth_time_domain, ...)
+
+loop каждый UTC-момент домена
+    Swiss -> Swiss : тела → активная сетка → find_aspects
+end
+Swiss -> Swiss : оставить пары, существующие всегда\nс одним type/category; orb = max
+Swiss -> Swiss : configurations только из\nустойчивых aspects
+
+note right of Swiss
+ADR-0032 реализован для всех пар,
+не только для Луны. Минутные positions
+не сериализуются и не попадают в DEBUG;
+логируется агрегированная статистика.
+
+Отдельные warnings ADR-0008 о смене
+знака/направления остаются открыты.
+end note
+
+Swiss --> Engine : NatalChart\n(chart_kind = "cosmogram", cusps/angles = None,\nstable aspects/configurations,\ntime_uncertainty={domain, excluded_aspects})
 Engine -> Engine : validate chart ↔ spec/resolved
 Engine --> Artifacts : CalculationResult
 

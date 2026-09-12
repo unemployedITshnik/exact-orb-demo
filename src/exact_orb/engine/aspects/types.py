@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AspectType(str, Enum):
@@ -85,13 +86,14 @@ class AspectConfig(BaseModel):
 
     ``mode`` selects which independent orb set is active. Natal aspects use a
     broader default set, while transit aspects are capped more tightly.
+    ``true_node`` is the sole relational representative of the lunar-node
+    axis; the derived ``south_node`` position cannot be added to the grid.
     """
 
     mode: Literal["natal", "transit"] = "natal"
     categories: CategoryThresholds = Field(default_factory=CategoryThresholds)
     natal_orbs: AspectOrbSet = Field(default_factory=lambda: _default_natal_orbs())
     transit_orbs: AspectOrbSet = Field(default_factory=lambda: _default_transit_orbs())
-    point_aliases: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_POINT_ALIASES))
     natal_points: tuple[str, ...] = (
         "sun",
         "moon",
@@ -105,7 +107,6 @@ class AspectConfig(BaseModel):
         "pluto",
         "chiron",
         "true_node",
-        "south_node",
         "mean_apog",
         "selena",
         "pars_fortune",
@@ -113,6 +114,21 @@ class AspectConfig(BaseModel):
         "asc",
         "mc",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_point_aliases(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "point_aliases" in data:
+            raise ValueError("point_aliases is not part of the calculation contract")
+        return data
+
+    @model_validator(mode="after")
+    def _reject_dependent_lunar_node(self) -> "AspectConfig":
+        if "south_node" in self.natal_points:
+            raise ValueError(
+                "south_node is a derived lunar-node position, not an independent aspect point"
+            )
+        return self
 
     @property
     def active_orbs(self) -> AspectOrbSet:
@@ -147,13 +163,6 @@ ASPECT_PRIORITY: dict[AspectType, int] = {
     aspect_type: index for index, aspect_type in enumerate(ASPECT_ANGLES)
 }
 
-DEFAULT_POINT_ALIASES: dict[str, str] = {
-    "true_node": "north_node",
-    "mean_apog": "lilith",
-    "pars_fortune": "pars",
-}
-
-
 def _default_natal_orbs() -> AspectOrbSet:
     luminaries = {"sun": 7.0, "moon": 7.0}
     planets = {
@@ -168,11 +177,10 @@ def _default_natal_orbs() -> AspectOrbSet:
         "chiron": 7.0,
     }
     points = {
-        "north_node": 3.0,
-        "south_node": 3.0,
-        "lilith": 3.0,
+        "true_node": 3.0,
+        "mean_apog": 3.0,
         "selena": 3.0,
-        "pars": 3.0,
+        "pars_fortune": 3.0,
         "vertex": 3.0,
         "asc": 6.0,
         "mc": 6.0,
@@ -190,8 +198,8 @@ def _default_natal_orbs() -> AspectOrbSet:
         },
         body_orbs={**luminaries, **planets, **points},
         aspect_body_overrides={
-            AspectType.TRINE: {"pars": 2.0},
-            AspectType.OPPOSITION: {"pars": 2.0},
+            AspectType.TRINE: {"pars_fortune": 2.0},
+            AspectType.OPPOSITION: {"pars_fortune": 2.0},
             AspectType.SQUARE: {"pluto": 3.0},
         },
     )

@@ -20,6 +20,10 @@ from typing import Any
 
 import pytest
 
+from exact_orb.birth import (
+    build_birth_time_domain,
+    resolve_unknown_birth_time_for_migration,
+)
 from exact_orb.birth.types import BirthInput, ResolutionWarning, ResolvedBirthData
 from exact_orb.calculation.spec import NatalChartSpec
 from exact_orb.domain import RulershipScheme
@@ -63,6 +67,7 @@ pytestmark = pytest.mark.no_ephemeris_autoinit
 SQLITE_TEST_EXECUTOR_WORKERS = 4
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 GOLDEN_PAYLOAD_V1 = Path(__file__).with_name("golden") / "session_sqlite_payload_v1.json"
+GOLDEN_PAYLOAD_V2 = Path(__file__).with_name("golden") / "session_sqlite_payload_v2.json"
 
 BUSY = "SESSION_SQLITE_BUSY"
 OPEN_FAILED = "SESSION_SQLITE_OPEN_FAILED"
@@ -131,6 +136,7 @@ async def _opened(
     *,
     busy_timeout_ms: int = 1_000,
     executor: ThreadPoolExecutor | None = None,
+    unknown_time_migrator: Callable[..., object] | None = resolve_unknown_birth_time_for_migration,
 ) -> AsyncIterator[tuple[SqliteSessionPersistence, SqliteSessionPersistence]]:
     owned_executor = executor is None
     selected_executor = executor or ThreadPoolExecutor(max_workers=SQLITE_TEST_EXECUTOR_WORKERS)
@@ -139,11 +145,13 @@ async def _opened(
             path,
             executor=selected_executor,
             busy_timeout_ms=busy_timeout_ms,
+            unknown_time_migrator=unknown_time_migrator,
         )
         peer = await SqliteSessionPersistence.open(
             path,
             executor=selected_executor,
             busy_timeout_ms=busy_timeout_ms,
+            unknown_time_migrator=unknown_time_migrator,
         )
         yield primary, peer
     finally:
@@ -242,6 +250,7 @@ def test_public_construction_signatures_are_deliberately_narrow() -> None:
         ("db_path", inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.empty),
         ("executor", inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.empty),
         ("busy_timeout_ms", inspect.Parameter.KEYWORD_ONLY, 5_000),
+        ("unknown_time_migrator", inspect.Parameter.KEYWORD_ONLY, None),
     ]
 
     reaper_parameters = list(
@@ -1591,14 +1600,21 @@ def _golden_models() -> tuple[
         birth_time=None,
         place_id="moscow-earth",
     )
+    unknown_anchor, unknown_offset, unknown_domain = (
+        resolve_unknown_birth_time_for_migration(
+            unknown_birth.birth_date,
+            "Europe/Moscow",
+        )
+    )
     unknown_resolved = ResolvedBirthData(
-        utc_datetime=datetime(1987, 1, 2, 9, 0, 0, 654_321, tzinfo=UTC),
+        utc_datetime=unknown_anchor,
         latitude=55.75,
         longitude=37.62,
         tz_id="Europe/Moscow",
-        utc_offset_seconds=10_800,
+        utc_offset_seconds=unknown_offset,
         canonical_place="Moscow",
         time_unknown=True,
+        birth_time_domain=unknown_domain,
         warnings=(
             ResolutionWarning(
                 source="time",
@@ -1626,6 +1642,7 @@ def _golden_models() -> tuple[
         utc_offset_seconds=7_200,
         canonical_place="Paris",
         time_unknown=False,
+        birth_time_domain=None,
         warnings=(),
     )
     known_spec = NatalChartSpec(
@@ -1703,6 +1720,10 @@ def _load_golden_payload_v1() -> dict[str, Any]:
     return json.loads(GOLDEN_PAYLOAD_V1.read_text(encoding="utf-8"))
 
 
+def _load_golden_payload_v2() -> dict[str, Any]:
+    return json.loads(GOLDEN_PAYLOAD_V2.read_text(encoding="utf-8"))
+
+
 def _assert_payload_contract_equal(actual: object, expected: object) -> None:
     assert actual == expected, PAYLOAD_COMPATIBILITY_FAILURE
 
@@ -1746,13 +1767,11 @@ def _insert_golden_payload_v1(path: Path, fixture: dict[str, Any]) -> None:
         connection.close()
 
 
-def test_payload_v1_manifest_matches_codec_versions_and_dialog_limits() -> None:
+def test_payload_manifests_match_codec_versions_and_dialog_limits() -> None:
     fixture = _load_golden_payload_v1()
 
-    _assert_payload_contract_equal(
-        fixture["state_payload_version"],
-        sqlite_adapter._STATE_PAYLOAD_VERSION,
-    )
+    _assert_payload_contract_equal(fixture["state_payload_version"], 1)
+    _assert_payload_contract_equal(sqlite_adapter._STATE_PAYLOAD_VERSION, 2)
     _assert_payload_contract_equal(
         fixture["dialog_payload_version"],
         sqlite_adapter._DIALOG_PAYLOAD_VERSION,
@@ -1770,6 +1789,15 @@ def test_payload_v1_manifest_matches_codec_versions_and_dialog_limits() -> None:
         "sqlite",
         "pydantic",
     }
+    fixture_v2 = _load_golden_payload_v2()
+    _assert_payload_contract_equal(
+        fixture_v2["state_payload_version"],
+        sqlite_adapter._STATE_PAYLOAD_VERSION,
+    )
+    _assert_payload_contract_equal(
+        fixture_v2["dialog_payload_version"],
+        sqlite_adapter._DIALOG_PAYLOAD_VERSION,
+    )
 
 
 async def test_frozen_payload_v1_is_read_through_public_ports(
@@ -1801,6 +1829,11 @@ async def test_frozen_payload_v1_is_read_through_public_ports(
                 dialog=expected_dialog,
             ),
         )
+        assert _fetchone(
+            path,
+            "SELECT payload_version FROM session_states WHERE session_id = ?",
+            ("golden-full",),
+        ) == (2,)
 
         for session_id in expected_states:
             assert await persistence.sessions.get(
@@ -1811,11 +1844,40 @@ async def test_frozen_payload_v1_is_read_through_public_ports(
         assert _fetchone(path, "SELECT COUNT(*) FROM session_states") == (3,)
 
 
-async def test_public_writes_match_frozen_payload_v1(
+@pytest.mark.parametrize(
+    "migrator",
+    [None, lambda _birth_date, _tz_id: (_ for _ in ()).throw(ValueError("bad tz"))],
+)
+async def test_unknown_time_v1_requires_successful_injected_migrator(
+    tmp_path: Path,
+    migrator: Callable[..., object] | None,
+) -> None:
+    path = tmp_path / "golden-v1-migration-failure.sqlite3"
+    fixture = _load_golden_payload_v1()
+    executor = ThreadPoolExecutor(max_workers=SQLITE_TEST_EXECUTOR_WORKERS)
+    try:
+        persistence = await SqliteSessionPersistence.open(
+            path,
+            executor=executor,
+            unknown_time_migrator=migrator,
+        )
+        _insert_golden_payload_v1(path, fixture)
+
+        with pytest.raises(StateReadError) as caught:
+            await persistence.sessions.get(
+                "golden-full",
+                now=datetime.fromisoformat(fixture["reference_now"]["live"]),
+            )
+        assert caught.value.error_code == MIGRATION_FAILED
+    finally:
+        executor.shutdown(wait=True)
+
+
+async def test_public_writes_match_frozen_payload_v2(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "golden-v1-write.sqlite3"
-    fixture = _load_golden_payload_v1()
+    path = tmp_path / "golden-v2-write.sqlite3"
+    fixture = _load_golden_payload_v2()
     expected_states, expected_dialog, deltas = _golden_models()
 
     async with _opened(path) as (persistence, _):
@@ -1899,13 +1961,17 @@ async def test_full_models_round_trip_losslessly_across_independent_handles(
         place_id="москва-🌍",
     )
     resolved = ResolvedBirthData(
-        utc_datetime=datetime(1987, 1, 2, 9, 0, 0, 654_321, tzinfo=UTC),
+        utc_datetime=datetime(1987, 1, 2, 9, 0, 0, tzinfo=UTC),
         latitude=55.75,
         longitude=37.62,
         tz_id="Europe/Moscow",
         utc_offset_seconds=10_800,
         canonical_place="Москва 🌍",
         time_unknown=True,
+        birth_time_domain=build_birth_time_domain(
+            date(1987, 1, 2),
+            "Europe/Moscow",
+        ),
         warnings=(
             ResolutionWarning(
                 source="time",
@@ -2013,7 +2079,7 @@ async def test_historical_hard_deadline_is_not_rederived_from_current_ttl(
     [
         (
             "state",
-            "UPDATE session_states SET payload_version = 2 WHERE session_id = ?",
+            "UPDATE session_states SET payload_version = 3 WHERE session_id = ?",
             PAYLOAD_UNSUPPORTED,
         ),
         (
@@ -2938,6 +3004,7 @@ async def main():
                 utc_offset_seconds=14400,
                 canonical_place="Moscow",
                 time_unknown=False,
+                birth_time_domain=None,
             ),
             base_chart_spec=NatalChartSpec(chart_kind="natal"),
         )

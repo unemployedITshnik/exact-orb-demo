@@ -7,9 +7,10 @@ import logging
 from time import perf_counter
 from typing import AbstractSet, Literal, Mapping
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from exact_orb import swiss_backend
+from exact_orb.birth.types import BirthTimeDomain
 from exact_orb.config import EphemerisStatus, get_selena_method_name, validate_ephemeris_path
 from exact_orb.domain import (
     ChartKind,
@@ -19,8 +20,21 @@ from exact_orb.domain import (
     normalize_include as normalize_domain_include,
     normalize_natal_house_system_code,
 )
-from exact_orb.engine.aspects import Aspect, AspectConfig, PositionedPoint, find_aspects
+from exact_orb.engine.aspects import (
+    Aspect,
+    AspectConfig,
+    AspectPointRef,
+    PositionedPoint,
+    find_aspects,
+)
 from exact_orb.engine.configurations import Configuration, ConfigurationConfig, find_configurations
+from exact_orb.engine.configurations.integrity import validate_configuration_tree
+from exact_orb.engine.charts.uncertainty import (
+    CosmogramTimeUncertainty,
+    UnstableAspect,
+    find_time_stable_aspects,
+    unstable_aspect_sort_key,
+)
 from exact_orb.engine.ephemeris.calc import (
     calculate_bodies,
     calculate_houses,
@@ -112,7 +126,152 @@ class NatalChart(BaseModel):
     aspects: tuple[Aspect, ...] | None = None
     configurations: tuple[Configuration, ...] | None = None
     strength: NatalStrength | None = None
+    time_uncertainty: CosmogramTimeUncertainty | None
     warnings: tuple[CalculationWarning, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_point_references(self) -> "NatalChart":
+        available = _chart_point_references(self.bodies, self.angles)
+
+        if self.configurations is not None and self.aspects is None:
+            raise ValueError(
+                "configurations must be None when NatalChart.aspects is None"
+            )
+
+        if self.chart_kind == "natal":
+            if self.time_uncertainty is not None:
+                raise ValueError("natal chart must not have time_uncertainty")
+        else:
+            if self.time_uncertainty is None:
+                raise ValueError("cosmogram requires time_uncertainty")
+            if self.datetime_utc not in self.time_uncertainty.domain:
+                raise ValueError(
+                    "datetime_utc must belong to time_uncertainty.domain"
+                )
+            excluded = self.time_uncertainty.excluded_aspects
+            if self.aspects is None and excluded is not None:
+                raise ValueError(
+                    "time_uncertainty.excluded_aspects must be None when aspects is None"
+                )
+            if self.aspects is not None and excluded is None:
+                raise ValueError(
+                    "time_uncertainty.excluded_aspects must be a tuple when aspects are present"
+                )
+
+            published_pairs = {
+                _unordered_pair_key(aspect.from_point, aspect.to_point)
+                for aspect in self.aspects or ()
+            }
+            seen_diagnostics: set[frozenset[tuple[str, str]]] = set()
+            diagnostics = excluded or ()
+            if tuple(sorted(diagnostics, key=unstable_aspect_sort_key)) != diagnostics:
+                raise ValueError(
+                    "time_uncertainty.excluded_aspects must be canonically sorted"
+                )
+            for index, diagnostic in enumerate(diagnostics):
+                path = f"time_uncertainty.excluded_aspects[{index}]"
+                _require_resolved_point(
+                    diagnostic.from_point,
+                    available,
+                    f"{path}.from_point",
+                )
+                _require_resolved_point(
+                    diagnostic.to_point,
+                    available,
+                    f"{path}.to_point",
+                )
+                pair = _unordered_pair_key(
+                    diagnostic.from_point,
+                    diagnostic.to_point,
+                )
+                if pair in seen_diagnostics:
+                    raise ValueError(f"{path} duplicates an excluded pair")
+                if pair in published_pairs:
+                    raise ValueError(f"{path} duplicates a published aspect pair")
+                seen_diagnostics.add(pair)
+
+        for index, aspect in enumerate(self.aspects or ()):
+            _require_resolved_aspect(aspect, available, f"aspects[{index}]")
+        for index, configuration in enumerate(self.configurations or ()):
+            path = f"configurations[{index}]"
+            _require_resolved_configuration(
+                configuration,
+                available,
+                path,
+            )
+            validate_configuration_tree(configuration, self.aspects or (), path)
+        return self
+
+
+def _unordered_pair_key(
+    left: AspectPointRef,
+    right: AspectPointRef,
+) -> frozenset[tuple[str, str]]:
+    return frozenset(((left.chart, left.body), (right.chart, right.body)))
+
+
+def _chart_point_references(
+    bodies: Mapping[str, BodyPosition] | None,
+    angles: Mapping[str, AnglePosition] | None,
+) -> set[tuple[str, str]]:
+    references: set[tuple[str, str]] = set()
+
+    for name, body in (bodies or {}).items():
+        if name != body.name:
+            raise ValueError(f"bodies key {name!r} must match BodyPosition.name")
+        reference = (body.chart, name)
+        if reference in references:
+            raise ValueError(f"duplicate chart point reference {body.chart}:{name}")
+        references.add(reference)
+
+    for name, angle in (angles or {}).items():
+        if name != angle.name:
+            raise ValueError(f"angles key {name!r} must match AnglePosition.name")
+        reference = ("natal", name)
+        if reference in references:
+            raise ValueError(f"duplicate chart point reference natal:{name}")
+        references.add(reference)
+
+    return references
+
+
+def _require_resolved_aspect(
+    aspect: Aspect,
+    available: set[tuple[str, str]],
+    path: str,
+) -> None:
+    _require_resolved_point(aspect.from_point, available, f"{path}.from_point")
+    _require_resolved_point(aspect.to_point, available, f"{path}.to_point")
+
+
+def _require_resolved_configuration(
+    configuration: Configuration,
+    available: set[tuple[str, str]],
+    path: str,
+) -> None:
+    for role, point in configuration.points.items():
+        _require_resolved_point(point, available, f"{path}.points[{role!r}]")
+    for index, aspect in enumerate(configuration.aspects):
+        _require_resolved_aspect(aspect, available, f"{path}.aspects[{index}]")
+    for index, nested in enumerate(configuration.contains):
+        _require_resolved_configuration(nested, available, f"{path}.contains[{index}]")
+
+
+def _require_resolved_point(
+    point: AspectPointRef,
+    available: set[tuple[str, str]],
+    path: str,
+) -> None:
+    if point.body == "south_node":
+        raise ValueError(
+            f"{path} must not reference derived lunar-node position south_node"
+        )
+    reference = (point.chart, point.body)
+    if reference not in available:
+        raise ValueError(
+            f"{path} must resolve to NatalChart.bodies or NatalChart.angles: "
+            f"{point.chart}:{point.body}"
+        )
 
 
 def calculate_natal(
@@ -132,6 +291,7 @@ def calculate_natal(
     aspect_config: AspectConfig | None = None,
     configuration_config: ConfigurationConfig | None = None,
     strength_config: StrengthConfig | None = None,
+    birth_time_domain: BirthTimeDomain | None = None,
 ) -> NatalChart:
     """Calculate deterministic natal chart data.
 
@@ -157,6 +317,7 @@ def calculate_natal(
         "aspect_config": aspect_config,
         "configuration_config": configuration_config,
         "strength_config": strength_config,
+        "birth_time_domain": birth_time_domain,
     }
 
     def calculate() -> NatalChart:
@@ -177,6 +338,7 @@ def calculate_natal(
                 aspect_config=aspect_config,
                 configuration_config=configuration_config,
                 strength_config=strength_config,
+                birth_time_domain=birth_time_domain,
             )
 
     return log_sync_component_call(
@@ -207,6 +369,7 @@ def _calculate_natal(
     aspect_config: AspectConfig | None,
     configuration_config: ConfigurationConfig | None,
     strength_config: StrengthConfig | None,
+    birth_time_domain: BirthTimeDomain | None,
 ) -> NatalChart:
     """Calculate deterministic natal chart data.
 
@@ -215,6 +378,7 @@ def _calculate_natal(
     """
 
     started_at = perf_counter()
+    _validate_birth_time_domain(chart_kind, birth_datetime, birth_time_domain)
     LOGGER.debug(
         "calculate_natal start chart_kind=%s house_system=%s rulership=%s include=%s",
         chart_kind,
@@ -311,14 +475,28 @@ def _calculate_natal(
         LOGGER.debug("natal_rulership skipped include_houses=False")
     configured_aspects = aspect_config or AspectConfig.natal()
     step_started_at = perf_counter()
-    calculated_aspects = (
-        _calculate_natal_aspects(bodies, angles, configured_aspects)
-        if {"aspects", "configurations"} & include_blocks
-        else None
-    )
+    excluded_aspects = None
+    if "aspects" not in include_blocks:
+        calculated_aspects = None
+    elif chart_kind == "cosmogram":
+        if birth_time_domain is None:
+            raise RuntimeError("validated cosmogram domain is missing")
+        calculated_aspects, excluded_aspects = _calculate_cosmogram_aspects(
+            birth_time_domain,
+            body_ids or DEFAULT_BODY_IDS,
+            flags,
+            configured_selena_method,
+            configured_aspects,
+        )
+    else:
+        calculated_aspects = _calculate_natal_aspects(
+            bodies,
+            angles,
+            configured_aspects,
+        )
     LOGGER.debug(
         "natal_aspects block included=%s aspects=%s duration_ms=%.3f",
-        bool({"aspects", "configurations"} & include_blocks),
+        "aspects" in include_blocks,
         len(calculated_aspects) if calculated_aspects is not None else None,
         _elapsed_ms(step_started_at),
     )
@@ -377,6 +555,14 @@ def _calculate_natal(
         aspects=calculated_aspects if "aspects" in include_blocks else None,
         configurations=configurations,
         strength=strength,
+        time_uncertainty=(
+            CosmogramTimeUncertainty(
+                domain=birth_time_domain,
+                excluded_aspects=excluded_aspects,
+            )
+            if chart_kind == "cosmogram" and birth_time_domain is not None
+            else None
+        ),
         warnings=tuple(warnings),
     )
     LOGGER.debug(
@@ -389,6 +575,23 @@ def _calculate_natal(
         len(chart.warnings),
     )
     return chart
+
+
+def _validate_birth_time_domain(
+    chart_kind: ChartKind,
+    birth_datetime: datetime,
+    birth_time_domain: BirthTimeDomain | None,
+) -> None:
+    if chart_kind == "natal":
+        if birth_time_domain is not None:
+            raise ValueError("natal chart must not receive birth_time_domain")
+        return
+    if chart_kind != "cosmogram":
+        return
+    if birth_time_domain is None:
+        raise ValueError("cosmogram requires birth_time_domain")
+    if to_utc(birth_datetime) not in birth_time_domain:
+        raise ValueError("cosmogram anchor must belong to birth_time_domain")
 
 
 def _normalize_include(chart_kind: ChartKind, include: AbstractSet[str] | None) -> frozenset[str]:
@@ -426,6 +629,51 @@ def _calculate_natal_aspects(
         config.active_orbs.max_orb,
     )
     return aspects
+
+
+def _calculate_cosmogram_aspects(
+    domain: BirthTimeDomain,
+    body_ids: Mapping[str, int],
+    flags: int,
+    selena_method_name: str,
+    config: AspectConfig,
+) -> tuple[tuple[Aspect, ...], tuple[UnstableAspect, ...]]:
+    started_at = perf_counter()
+    snapshots: list[tuple[PositionedPoint, ...]] = []
+    for moment_utc in domain.iter_utc():
+        julian_day_ut = ephemeris_jd_ut(moment_utc)
+        bodies, _warnings = calculate_bodies(
+            julian_day_ut,
+            body_ids,
+            flags,
+            None,
+            chart="natal",
+            log_details=False,
+        )
+        angles: dict[str, AnglePosition] = {}
+        _add_derived_points(
+            bodies,
+            angles,
+            None,
+            moment_utc,
+            julian_day_ut,
+            flags,
+            selena_method_name,
+            chart="natal",
+            log_details=False,
+        )
+        snapshots.append(_natal_aspect_points(bodies, angles, config))
+
+    stable, excluded = find_time_stable_aspects(snapshots, config)
+    LOGGER.debug(
+        "cosmogram_aspect_stability moments=%d pairs=%d stable=%d excluded=%d duration_ms=%.3f",
+        domain.minute_count,
+        len(snapshots[0]) * (len(snapshots[0]) - 1) // 2,
+        len(stable),
+        len(excluded),
+        _elapsed_ms(started_at),
+    )
+    return stable, excluded
 
 
 def _calculate_natal_configurations(
@@ -466,9 +714,8 @@ def _configuration_config_with_signs(
         else:
             continue
 
-        body_name = aspect_config.point_aliases.get(name, name)
-        point_signs[body_name] = sign_index
-        point_signs[f"natal:{body_name}"] = sign_index
+        point_signs[name] = sign_index
+        point_signs[f"natal:{name}"] = sign_index
 
     point_signs.update(configuration_config.point_signs)
     return configuration_config.model_copy(update={"point_signs": point_signs})
@@ -491,7 +738,7 @@ def _natal_aspect_points(
         points.append(
             PositionedPoint(
                 chart="natal",
-                body=config.point_aliases.get(name, name),
+                body=name,
                 longitude=longitude,
             )
         )
@@ -551,10 +798,12 @@ def _calculate_natal_strength(
     dispositors, mutual_receptions = calculate_dispositor_chains(
         body_signs,
         bodies=config.planets,
+        system=config.dignity_system,
     )
 
     strength = NatalStrength(
         dignity_system=config.dignity_system,
+        dispositor_system=config.dignity_system,
         planets=planet_strengths,
         balance=calculate_balance(bodies, angles, config),
         dispositors=dispositors,
@@ -736,6 +985,7 @@ def _add_derived_points(
     selena_method_name: str,
     *,
     chart: str,
+    log_details: bool = True,
 ) -> None:
     if "true_node" in bodies and "south_node" not in bodies:
         true_node = bodies["true_node"]
@@ -756,7 +1006,12 @@ def _add_derived_points(
             zodiac=zodiac_position(longitude),
             retflags=true_node.retflags,
         )
-        LOGGER.debug("derived_point name=%s house=%s", "south_node", bodies["south_node"].house)
+        if log_details:
+            LOGGER.debug(
+                "derived_point name=%s house=%s",
+                "south_node",
+                bodies["south_node"].house,
+            )
 
     if {"sun", "moon"}.issubset(bodies) and "asc" in angles and "pars_fortune" not in bodies:
         from exact_orb.engine.ephemeris.points import part_of_fortune
@@ -773,11 +1028,12 @@ def _add_derived_points(
             cusps,
             chart=chart,
         )
-        LOGGER.debug(
-            "derived_point name=%s house=%s",
-            "pars_fortune",
-            bodies["pars_fortune"].house,
-        )
+        if log_details:
+            LOGGER.debug(
+                "derived_point name=%s house=%s",
+                "pars_fortune",
+                bodies["pars_fortune"].house,
+            )
 
     if "selena" not in bodies:
         from exact_orb.engine.ephemeris.selena import get_selena_method
@@ -791,12 +1047,13 @@ def _add_derived_points(
                 else None
             }
         )
-        LOGGER.debug(
-            "derived_point name=%s method=%s house=%s",
-            "selena",
-            selena_method_name,
-            bodies["selena"].house,
-        )
+        if log_details:
+            LOGGER.debug(
+                "derived_point name=%s method=%s house=%s",
+                "selena",
+                selena_method_name,
+                bodies["selena"].house,
+            )
 
     _ = moment_utc
 

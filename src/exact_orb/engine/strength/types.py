@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DignityStatus(str, Enum):
@@ -192,6 +192,7 @@ class NatalStrength(BaseModel):
     """Complete natal strength and structure report."""
 
     dignity_system: Literal["traditional", "modern"]
+    dispositor_system: Literal["traditional", "modern"]
     planets: dict[str, PlanetStrength]
     balance: ChartBalance
     dispositors: dict[str, DispositorChain]
@@ -200,6 +201,12 @@ class NatalStrength(BaseModel):
     degree_flags: tuple[DegreeFlag, ...]
     interceptions: InterceptionSummary
     weak_note: str
+
+    @model_validator(mode="after")
+    def _strength_systems_must_match(self) -> "NatalStrength":
+        if self.dispositor_system != self.dignity_system:
+            raise ValueError("dispositor_system must equal dignity_system")
+        return self
 
 
 class StrengthConfig(BaseModel):

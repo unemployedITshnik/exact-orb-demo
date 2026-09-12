@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from math import sqrt
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from exact_orb import swiss_backend
 from exact_orb.engine.aspects import AspectConfig, PositionedPoint, find_aspects
@@ -189,6 +189,23 @@ class TransitChart(BaseModel):
     houses: tuple[HouseCusp, ...] | None = None
     angles: dict[str, AnglePosition] | None = None
     warnings: tuple[CalculationWarning, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_lunar_node_axis_targets(self) -> "TransitChart":
+        for index, aspect in enumerate(self.aspects):
+            if aspect.to.body == "south_node":
+                raise ValueError(
+                    f"aspects[{index}].to must not reference derived lunar-node position south_node"
+                )
+        for station_index, station in enumerate(self.stations):
+            for aspect_index, aspect in enumerate(station.natal_aspects):
+                if aspect.to.body == "south_node":
+                    raise ValueError(
+                        "stations"
+                        f"[{station_index}].natal_aspects[{aspect_index}].to must not "
+                        "reference derived lunar-node position south_node"
+                    )
+        return self
 
 
 def calculate_transit(
@@ -381,7 +398,7 @@ def _calculate_transit_aspects(
         for natal_name, natal_longitude in natal_points.items():
             natal_point = PositionedPoint(
                 chart="natal",
-                body=_configured_body_name(natal_name, config),
+                body=natal_name,
                 longitude=natal_longitude,
             )
             current = find_aspects([transit_point], [natal_point], config)
@@ -485,7 +502,7 @@ def _station_aspects(
     for natal_name, natal_longitude in natal_points.items():
         natal_point = PositionedPoint(
             chart="natal",
-            body=_configured_body_name(natal_name, config),
+            body=natal_name,
             longitude=natal_longitude,
         )
         current = find_aspects([station_point], [natal_point], config)
@@ -501,10 +518,6 @@ def _station_aspects(
             )
         )
     return tuple(sorted(aspects, key=lambda item: (item.orb, item.to.body)))
-
-
-def _configured_body_name(name: str, config: AspectConfig) -> str:
-    return config.point_aliases.get(name, name)
 
 
 def _station_dates(
@@ -877,8 +890,15 @@ def _natal_points(natal: NatalChart) -> dict[str, float]:
     if natal.bodies is None or natal.angles is None:
         raise ValueError("natal chart must include positions and houses for transit aspects")
 
-    points = {name: body.longitude for name, body in natal.bodies.items()}
+    allowed = set(AspectConfig.transit().natal_points)
+    points = {
+        name: body.longitude
+        for name, body in natal.bodies.items()
+        if name in allowed
+    }
     for angle_name in NATAL_ANGLE_ASPECTS:
+        if angle_name not in allowed:
+            continue
         angle = natal.angles.get(angle_name)
         if angle is not None:
             points[angle_name] = angle.longitude

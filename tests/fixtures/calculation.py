@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from exact_orb.birth.types import ResolvedBirthData
+from exact_orb.birth.types import BirthTimeDomain, ResolvedBirthData, UtcMinuteRange
 from exact_orb.calculation.chart_contract import calculation_input_from_chart
 from exact_orb.calculation.engine import CalculationResult
 from exact_orb.calculation.keys import calculation_input_from, calculation_key
@@ -14,6 +14,7 @@ from exact_orb.calculation.types import ChartArtifact
 from exact_orb.config import EphemerisStatus
 from exact_orb.domain import DEFAULT_INCLUDE_BY_CHART_KIND
 from exact_orb.engine.charts.natal import NatalChart
+from exact_orb.engine.charts.uncertainty import CosmogramTimeUncertainty
 from exact_orb.engine.ephemeris.types import CalculationWarning
 from exact_orb.engine.strength.types import (
     ChartBalance,
@@ -63,6 +64,7 @@ def artifact(
         house_system=spec.house_system,
         include=spec.include,
         warnings=warnings or (),
+        birth_time_domain=resolved.birth_time_domain,
     )
     key = key or calculation_key(calculation_input_from_chart(chart), spec, version)
     return ChartArtifact(
@@ -91,6 +93,7 @@ def raw_chart(
     house_system: str = "P",
     include: tuple[str, ...] | None = None,
     warnings: tuple[CalculationWarning, ...] = (),
+    birth_time_domain: BirthTimeDomain | None = None,
 ) -> NatalChart:
     included = frozenset(
         DEFAULT_INCLUDE_BY_CHART_KIND[chart_kind] if include is None else include
@@ -120,6 +123,17 @@ def raw_chart(
         aspects=() if "aspects" in included else None,
         configurations=() if "configurations" in included else None,
         strength=_minimal_strength() if "strength" in included else None,
+        time_uncertainty=(
+            CosmogramTimeUncertainty(
+                domain=birth_time_domain
+                or BirthTimeDomain(
+                    ranges=(UtcMinuteRange(first_utc=utc_datetime, count=1),)
+                ),
+                excluded_aspects=() if "aspects" in included else None,
+            )
+            if chart_kind == "cosmogram"
+            else None
+        ),
         warnings=warnings,
     )
 
@@ -127,6 +141,7 @@ def raw_chart(
 def _minimal_strength() -> NatalStrength:
     return NatalStrength(
         dignity_system="modern",
+        dispositor_system="modern",
         planets={},
         balance=ChartBalance(
             elements={},
@@ -171,6 +186,7 @@ def resolved_birth_data(
         utc_offset_seconds=10800,
         canonical_place=canonical_place,
         time_unknown=False,
+        birth_time_domain=None,
         warnings=(),
     )
 

@@ -4,21 +4,25 @@ from __future__ import annotations
 
 from itertools import combinations
 
-from exact_orb.engine.aspects import AspectType
-
 from ..types import Configuration, ConfigurationConfig, ConfigurationType
-from .common import build_configuration, shared_modality, sorted_points
+from .common import build_configuration, role_edge_type, shared_modality, sorted_points
 
 
 def find(graph, config: ConfigurationConfig) -> list[Configuration]:
     results: list[Configuration] = []
     seen: set[frozenset[tuple[str, str]]] = set()
+    opposition_type = role_edge_type(
+        ConfigurationType.GRAND_CROSS, "axis_1_a", "axis_1_b"
+    )
+    square_type = role_edge_type(
+        ConfigurationType.GRAND_CROSS, "axis_1_a", "axis_2_a"
+    )
 
     for points in combinations(graph.points, 4):
         opposition_pairs = [
             (left, right, aspect)
             for left, right in combinations(points, 2)
-            if (aspect := graph.aspect_between(left, right, AspectType.OPPOSITION)) is not None
+            if (aspect := graph.aspect_between(left, right, opposition_type)) is not None
         ]
         if len(opposition_pairs) != 2:
             continue
@@ -32,7 +36,7 @@ def find(graph, config: ConfigurationConfig) -> list[Configuration]:
         squares = []
         for left in axis_1:
             for right in axis_2:
-                square = graph.aspect_between(left, right, AspectType.SQUARE)
+                square = graph.aspect_between(left, right, square_type)
                 if square is None:
                     break
                 squares.append(square)

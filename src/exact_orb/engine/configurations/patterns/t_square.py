@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from exact_orb.engine.aspects import AspectType
-
 from ..types import Configuration, ConfigurationConfig, ConfigurationType
-from .common import build_configuration, sorted_points
+from .common import build_configuration, role_edge_type, sorted_points
 
 
 def find(graph, config: ConfigurationConfig) -> list[Configuration]:
     results: list[Configuration] = []
     seen: set[tuple[tuple[str, str], ...]] = set()
+    opposition_type = role_edge_type(
+        ConfigurationType.T_SQUARE, "base_1", "base_2"
+    )
+    square_type = role_edge_type(ConfigurationType.T_SQUARE, "apex", "base_1")
 
-    for base_1, base_2, opposition in graph.edges_of_type(AspectType.OPPOSITION):
+    for base_1, base_2, opposition in graph.edges_of_type(opposition_type):
         for apex in graph.points:
             if apex in {base_1, base_2}:
                 continue
-            square_1 = graph.aspect_between(apex, base_1, AspectType.SQUARE)
-            square_2 = graph.aspect_between(apex, base_2, AspectType.SQUARE)
+            square_1 = graph.aspect_between(apex, base_1, square_type)
+            square_2 = graph.aspect_between(apex, base_2, square_type)
             if square_1 is None or square_2 is None:
                 continue
 

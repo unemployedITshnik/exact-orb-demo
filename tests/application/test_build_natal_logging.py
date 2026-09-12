@@ -309,6 +309,7 @@ async def test_handler_logs_complete_input_and_output_component_messages(
         utc_offset_seconds=14400,
         canonical_place="Private-City-Alpha",
         time_unknown=False,
+        birth_time_domain=None,
         warnings=(),
     )
     spec = NatalChartSpec(chart_kind="natal")

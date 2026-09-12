@@ -97,6 +97,8 @@ class AspectGraph:
                 continue
             left = point_key(aspect.from_point)
             right = point_key(aspect.to_point)
+            if "south_node" in {left[1], right[1]}:
+                continue
             if allowed is not None and (left[1] not in allowed or right[1] not in allowed):
                 continue
             if left == right:

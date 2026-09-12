@@ -42,7 +42,7 @@ def test_configuration_groups_and_roles_are_rendered_by_category() -> None:
     assert "ПЛОТНЫЕ (< 3°)" in configurations
     assert "УМЕРЕННЫЕ" not in configurations
     assert "РЫХЛЫЕ (> 5°)" in configurations
-    assert len(re.findall(r"^\s{4}.+max", _between(configurations, "ПЛОТНЫЕ", "РЫХЛЫЕ"), re.MULTILINE)) == 3
+    assert len(re.findall(r"^\s{4}.+max", _between(configurations, "ПЛОТНЫЕ", "РЫХЛЫЕ"), re.MULTILINE)) == 1
     assert len(re.findall(r"^\s{4}.+max", _between(configurations, "РЫХЛЫЕ", ""), re.MULTILINE)) == 5
     assert re.search(r"Йод\s+max 1°41'\s+apex: Солнце · base: Юпитер, Луна", configurations)
     assert re.search(r"Трапеция\s+max 6°47'\s+opp: Хирон–Уран · base: Юпитер, Луна", configurations)

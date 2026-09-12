@@ -10,27 +10,31 @@ from __future__ import annotations
 
 from itertools import combinations
 
-from exact_orb.engine.aspects import AspectType
-
 from ..types import Configuration, ConfigurationConfig, ConfigurationType
-from .common import build_configuration, sorted_points
+from .common import build_configuration, role_edge_type, sorted_points
 
 
 def find(graph, config: ConfigurationConfig) -> list[Configuration]:
     results: list[Configuration] = []
     seen: set[frozenset[tuple[str, str]]] = set()
+    sextile_type = role_edge_type(
+        ConfigurationType.BISEXTILE, "center", "wing_1"
+    )
+    trine_type = role_edge_type(
+        ConfigurationType.BISEXTILE, "wing_1", "wing_2"
+    )
 
     for point_1, point_2, point_3 in combinations(graph.points, 3):
         points = (point_1, point_2, point_3)
         sextiles = [
             (left, right, aspect)
             for left, right in combinations(points, 2)
-            if (aspect := graph.aspect_between(left, right, AspectType.SEXTILE)) is not None
+            if (aspect := graph.aspect_between(left, right, sextile_type)) is not None
         ]
         trines = [
             (left, right, aspect)
             for left, right in combinations(points, 2)
-            if (aspect := graph.aspect_between(left, right, AspectType.TRINE)) is not None
+            if (aspect := graph.aspect_between(left, right, trine_type)) is not None
         ]
         if len(sextiles) != 2 or len(trines) != 1:
             continue

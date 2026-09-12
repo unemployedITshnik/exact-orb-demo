@@ -135,7 +135,7 @@ async def test_real_natal_path_caches_and_correlates_run_id(
         assert isinstance(first, BuildNatalSuccess)
         assert first.artifact.spec == first.delta.base_chart_spec
         assert first.artifact.chart.chart_kind == "natal"
-        assert first.artifact.calculation_key.startswith("eo:calc:v1:")
+        assert first.artifact.calculation_key.startswith("eo:calc:v2:")
         assert first.delta.birth_input is command.birth_input
         assert first.artifact.chart.cusps is not None
         assert first.artifact.chart.angles is not None

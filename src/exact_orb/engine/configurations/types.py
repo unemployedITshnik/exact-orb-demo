@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from exact_orb.engine.aspects import Aspect, AspectPointRef
 
@@ -63,6 +63,8 @@ class ConfigurationConfig(BaseModel):
     figures can remain meaningful at wider orbs. ``point_signs`` is optional
     chart metadata keyed by ``body`` or ``chart:body`` and is used only to label
     grand trines and grand crosses.
+    ``points=None`` disables only the additional allowlist; the derived
+    ``south_node`` remains ineligible as an independent graph point.
     """
 
     configuration_max_orb: float = Field(default=7.0, ge=0.0)
@@ -83,8 +85,15 @@ class ConfigurationConfig(BaseModel):
         "neptune",
         "pluto",
         "chiron",
-        "north_node",
-        "south_node",
-        "lilith",
+        "true_node",
+        "mean_apog",
     )
     point_signs: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _reject_dependent_lunar_node(self) -> "ConfigurationConfig":
+        if self.points is not None and "south_node" in self.points:
+            raise ValueError(
+                "south_node is a derived lunar-node position, not an independent configuration point"
+            )
+        return self

@@ -20,7 +20,12 @@ from exact_orb.application.ports import (
 )
 from exact_orb.application.results import BuildNatalSuccess
 from exact_orb.birth.resolver import BirthDataResolver
-from exact_orb.birth.types import BirthInput, ResolvedBirthData
+from exact_orb.birth.types import (
+    BirthInput,
+    BirthTimeDomain,
+    ResolvedBirthData,
+    UtcMinuteRange,
+)
 from exact_orb.calculation.artifacts import ChartArtifactResolver
 from exact_orb.calculation.chart_contract import calculation_input_from_chart
 from exact_orb.calculation.engine import NatalTechniqueAdapter, TechniqueAdapter
@@ -53,6 +58,21 @@ def _populated_delta(
         birth_input=_birth_input() if birth_input is None else birth_input,
         birth_resolved=resolved_birth_data() if resolved is None else resolved,
         base_chart_spec=spec,
+    )
+
+
+def _resolved(*, time_unknown: bool = False) -> ResolvedBirthData:
+    resolved = resolved_birth_data()
+    if not time_unknown:
+        return resolved
+    return ResolvedBirthData.model_validate(
+        {
+            **resolved.model_dump(),
+            "time_unknown": True,
+            "birth_time_domain": BirthTimeDomain(
+                ranges=(UtcMinuteRange(first_utc=resolved.utc_datetime, count=1),)
+            ),
+        }
     )
 
 
@@ -106,7 +126,7 @@ def test_build_natal_success_accepts_an_explicit_consistent_pair() -> None:
 
 def test_build_natal_success_accepts_consistent_unknown_time_cosmogram() -> None:
     spec = chart_spec(chart_kind="cosmogram")
-    resolved = resolved_birth_data().model_copy(update={"time_unknown": True})
+    resolved = _resolved(time_unknown=True)
     birth_input = _birth_input().model_copy(update={"birth_time": None})
     chart_artifact = artifact(spec=spec, resolved=resolved)
     delta = _populated_delta(
@@ -249,7 +269,7 @@ def test_build_natal_success_rejects_chart_kind_inconsistent_with_time_unknown(
     time_unknown: bool,
     chart_kind: str,
 ) -> None:
-    resolved = resolved_birth_data().model_copy(update={"time_unknown": time_unknown})
+    resolved = _resolved(time_unknown=time_unknown)
     birth_input = _birth_input().model_copy(
         update={"birth_time": None if time_unknown else time(14, 30)}
     )
@@ -282,7 +302,7 @@ def test_build_natal_success_rejects_birth_time_presence_inconsistent_with_resol
     chart_kind: str,
 ) -> None:
     birth_input = _birth_input().model_copy(update={"birth_time": birth_time})
-    resolved = resolved_birth_data().model_copy(update={"time_unknown": time_unknown})
+    resolved = _resolved(time_unknown=time_unknown)
     spec = chart_spec(chart_kind=chart_kind)
 
     with pytest.raises(

@@ -254,6 +254,23 @@ def test_point_vocabularies_are_exact_and_disjoint_from_aliases() -> None:
     assert {"north_node", "lilith", "pars"}.isdisjoint(item.value for item in RelationalPoint)
 
 
+def test_research_v1_keeps_south_node_as_a_legacy_relational_value() -> None:
+    features = ChartFeatures(
+        feature_schema_version=1,
+        chart_kind="natal",
+        aspects=(
+            AspectFeature(
+                from_point="south_node",
+                to_point="sun",
+                aspect_type="trine",
+                category="working",
+            ),
+        ),
+    )
+
+    assert features.aspects[0].from_point is RelationalPoint.SOUTH_NODE
+
+
 @pytest.mark.parametrize("house", [0, 13])
 def test_house_bounds(house: int) -> None:
     with pytest.raises(ValidationError):

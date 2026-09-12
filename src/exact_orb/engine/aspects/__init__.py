@@ -1,6 +1,6 @@
 """Shared aspect calculation primitives."""
 
-from .finder import find_aspects
+from .finder import aspect_sort_key, find_aspects
 from .types import (
     Aspect,
     AspectCategory,
@@ -21,5 +21,6 @@ __all__ = [
     "AspectType",
     "CategoryThresholds",
     "PositionedPoint",
+    "aspect_sort_key",
     "find_aspects",
 ]

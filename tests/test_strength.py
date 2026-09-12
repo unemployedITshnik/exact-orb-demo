@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 import pytest
+from pydantic import ValidationError
 
 from exact_orb.engine.charts.natal import calculate_natal
 from exact_orb.engine.strength import StrengthConfig
@@ -69,18 +70,80 @@ def test_accidental_strength_matches_reference() -> None:
         assert item.category.value == category
 
 
-def test_dispositor_chains_and_mutual_reception_match_reference() -> None:
-    chart = _reference_chart(StrengthConfig())
+def test_modern_dispositor_chains_and_mutual_receptions_match_reference() -> None:
+    chart = _reference_chart(StrengthConfig(dignity_system="modern"))
     chains = chart.strength.dispositors
 
+    assert chart.strength.dignity_system == "modern"
+    assert chart.strength.dispositor_system == "modern"
     assert chains["moon"].chain == ("moon", "mars", "sun", "mercury", "sun")
     assert chains["moon"].steps_to_cycle == 2
     assert set(chains["moon"].cycle) == {"sun", "mercury"}
-    assert chains["uranus"].chain == ("uranus", "jupiter", "saturn", "mars", "sun", "mercury", "sun")
+    assert chains["uranus"].chain == ("uranus", "jupiter", "uranus")
+    assert chains["pluto"].chain == ("pluto", "pluto")
+    assert chains["pluto"].steps_to_cycle == 0
+    assert chains["pluto"].cycle == ("pluto",)
+    assert {(item.body_1, item.body_2) for item in chart.strength.mutual_receptions} == {
+        ("sun", "mercury"),
+        ("jupiter", "uranus"),
+    }
+
+
+def test_traditional_dispositor_chains_preserve_reference_method() -> None:
+    chart = _reference_chart(StrengthConfig(dignity_system="traditional"))
+    chains = chart.strength.dispositors
+
+    assert chart.strength.dignity_system == "traditional"
+    assert chart.strength.dispositor_system == "traditional"
+    assert chains["uranus"].chain == (
+        "uranus",
+        "jupiter",
+        "saturn",
+        "mars",
+        "sun",
+        "mercury",
+        "sun",
+    )
     assert chains["pluto"].chain == ("pluto", "mars", "sun", "mercury", "sun")
     assert {(item.body_1, item.body_2) for item in chart.strength.mutual_receptions} == {
         ("sun", "mercury")
     }
+
+
+def test_modern_and_traditional_standard_rulers_differ_for_outer_signs() -> None:
+    body_signs = {
+        "scorpio_body": 7,
+        "aquarius_body": 10,
+        "pisces_body": 11,
+        "mars": 0,
+        "saturn": 9,
+        "jupiter": 8,
+        "pluto": 7,
+        "uranus": 10,
+        "neptune": 11,
+    }
+
+    traditional, _ = calculate_dispositor_chains(
+        body_signs,
+        bodies=("scorpio_body", "aquarius_body", "pisces_body"),
+        system="traditional",
+    )
+    modern, _ = calculate_dispositor_chains(
+        body_signs,
+        bodies=("scorpio_body", "aquarius_body", "pisces_body"),
+        system="modern",
+    )
+
+    assert tuple(chain.chain[1] for chain in traditional.values()) == (
+        "mars",
+        "saturn",
+        "jupiter",
+    )
+    assert tuple(chain.chain[1] for chain in modern.values()) == (
+        "pluto",
+        "uranus",
+        "neptune",
+    )
 
 
 def test_dispositor_cycle_length_three_is_finite() -> None:
@@ -96,12 +159,133 @@ def test_dispositor_cycle_length_three_is_finite() -> None:
     assert receptions == ()
 
 
-def test_dispositor_domicile_is_cycle_length_one() -> None:
-    chains, receptions = calculate_dispositor_chains({"sun": 4}, bodies=("sun",))
+def test_custom_dispositor_cycle_length_one_is_finite() -> None:
+    chains, receptions = calculate_dispositor_chains(
+        {"a": 0},
+        bodies=("a",),
+        ruler_map={0: "a"},
+    )
 
-    assert chains["sun"].chain == ("sun", "sun")
-    assert chains["sun"].cycle == ("sun",)
+    assert chains["a"].chain == ("a", "a")
+    assert chains["a"].cycle == ("a",)
     assert receptions == ()
+
+
+def test_custom_dispositor_cycle_length_two_is_mutual_reception() -> None:
+    chains, receptions = calculate_dispositor_chains(
+        {"a": 0, "b": 1},
+        bodies=("a", "b"),
+        ruler_map={0: "b", 1: "a"},
+    )
+
+    assert chains["a"].chain == ("a", "b", "a")
+    assert chains["a"].cycle == ("a", "b")
+    assert tuple((item.body_1, item.body_2) for item in receptions) == (("a", "b"),)
+
+
+def test_custom_dispositor_missing_endpoint_becomes_terminal_cycle() -> None:
+    chains, receptions = calculate_dispositor_chains(
+        {"a": 0},
+        bodies=("a",),
+        ruler_map={0: "missing"},
+    )
+
+    assert chains["a"].chain == ("a", "missing")
+    assert chains["a"].steps_to_cycle == 1
+    assert chains["a"].cycle == ("missing",)
+    assert receptions == ()
+
+
+@pytest.mark.parametrize("system", ("combined", "unknown"))
+def test_dispositor_chains_reject_non_linear_standard_system(system: str) -> None:
+    with pytest.raises(ValueError, match="traditional.*modern"):
+        calculate_dispositor_chains(
+            {"sun": 4},
+            bodies=("sun",),
+            system=system,  # type: ignore[arg-type]
+        )
+
+
+def test_dispositor_chains_require_exactly_one_explicit_ruler_source() -> None:
+    with pytest.raises(ValueError, match="requires system or ruler_map"):
+        calculate_dispositor_chains({"sun": 4}, bodies=("sun",))
+
+    with pytest.raises(ValueError, match="either system or ruler_map"):
+        calculate_dispositor_chains(
+            {"sun": 4},
+            bodies=("sun",),
+            system="modern",
+            ruler_map={4: "sun"},
+        )
+
+
+def test_natal_strength_rejects_mismatched_dignity_and_dispositor_systems() -> None:
+    strength = _reference_chart(StrengthConfig()).strength
+    payload = strength.model_dump(mode="python")
+    payload["dispositor_system"] = "traditional"
+
+    with pytest.raises(
+        ValidationError,
+        match="dispositor_system must equal dignity_system",
+    ):
+        type(strength).model_validate(payload)
+
+
+def test_1990_control_chart_uses_one_system_for_dignities_and_dispositors() -> None:
+    calculation_args = (
+        datetime(1990, 9, 2, 10, 30, tzinfo=timezone.utc),
+        55.7558,
+        37.6173,
+    )
+    traditional = calculate_natal(
+        *calculation_args,
+        chart_kind="natal",
+        strength_config=StrengthConfig(dignity_system="traditional"),
+    )
+    modern = calculate_natal(
+        *calculation_args,
+        chart_kind="natal",
+        strength_config=StrengthConfig(dignity_system="modern"),
+    )
+
+    assert traditional.strength.dispositors["moon"].chain == (
+        "moon",
+        "saturn",
+        "saturn",
+    )
+    assert modern.strength.dispositors["moon"].chain == (
+        "moon",
+        "uranus",
+        "saturn",
+        "saturn",
+    )
+    assert traditional.strength.dispositors["pluto"].chain == (
+        "pluto",
+        "mars",
+        "mercury",
+        "mercury",
+    )
+    assert modern.strength.planets["pluto"].dignity.status.value == "domicile"
+    assert modern.strength.dispositors["pluto"].chain == ("pluto", "pluto")
+    assert _final_dispositors(traditional) == {"mercury", "saturn"}
+    assert _final_dispositors(modern) == {"mercury", "saturn", "pluto"}
+
+
+def test_house_rulership_scheme_does_not_change_modern_strength_system() -> None:
+    combined_houses = _reference_chart(StrengthConfig(dignity_system="modern"))
+    modern_houses = calculate_natal(
+        REFERENCE["datetime_utc"],
+        REFERENCE["latitude"],
+        REFERENCE["longitude"],
+        chart_kind="natal",
+        house_system=REFERENCE["house_system"],
+        rulership="modern",
+        strength_config=StrengthConfig(dignity_system="modern"),
+    )
+
+    assert combined_houses.house_rulers != modern_houses.house_rulers
+    assert combined_houses.strength.dispositors == modern_houses.strength.dispositors
+    assert combined_houses.strength.dispositor_system == "modern"
 
 
 def test_balance_matches_reference_and_fixed_modality_dominates() -> None:
@@ -227,7 +411,11 @@ def test_property_lunar_phase_is_always_normalized(sun: float, moon: float) -> N
     )
 )
 def test_property_dispositor_chains_are_finite(signs: dict[str, int]) -> None:
-    chains, _ = calculate_dispositor_chains(signs, bodies=PLANETS)
+    chains, _ = calculate_dispositor_chains(
+        signs,
+        bodies=PLANETS,
+        system="modern",
+    )
 
     assert all(len(chain.chain) <= len(PLANETS) + 1 for chain in chains.values())
 
@@ -264,3 +452,11 @@ def _reference_chart(config: StrengthConfig):
         house_system=REFERENCE["house_system"],
         strength_config=config,
     )
+
+
+def _final_dispositors(chart) -> set[str]:
+    return {
+        chain.cycle[0]
+        for chain in chart.strength.dispositors.values()
+        if len(chain.cycle) == 1
+    }

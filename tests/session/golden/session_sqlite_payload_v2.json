@@ -1,0 +1,183 @@
+{
+  "reference_environment": {
+    "python": "3.14.0",
+    "sqlite": "3.50.4",
+    "pydantic": "2.12.4"
+  },
+  "state_payload_version": 2,
+  "dialog_payload_version": 1,
+  "dialog_limits": {
+    "max_turns": 50,
+    "max_turn_chars": 8000,
+    "max_chars": 120000
+  },
+  "reference_now": {
+    "live": "2026-09-05T12:34:56.789123Z",
+    "touch": "2026-09-05T12:34:56.789123Z",
+    "expired": "2026-09-12T12:34:56.789123Z"
+  },
+  "states": [
+    {
+      "metadata": {
+        "session_id": "golden-empty",
+        "state_version": 0,
+        "created_at_us": 1788611696789123,
+        "expires_at_us": 1789216496789123,
+        "hard_expires_at_us": 1791203696789123,
+        "payload_version": 2
+      },
+      "payload": {
+        "session_id": "golden-empty",
+        "birth_input": null,
+        "birth_resolved": null,
+        "state_version": 0,
+        "base_chart": null,
+        "created_at": "2026-09-05T12:34:56.789123Z",
+        "expires_at": "2026-09-12T12:34:56.789123Z",
+        "hard_expires_at": "2026-10-05T12:34:56.789123Z"
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "golden-full",
+        "state_version": 1,
+        "created_at_us": 1788611696789123,
+        "expires_at_us": 1789216496789123,
+        "hard_expires_at_us": 1791203696789123,
+        "payload_version": 2
+      },
+      "payload": {
+        "session_id": "golden-full",
+        "birth_input": {
+          "birth_date": "1987-01-02",
+          "birth_time": null,
+          "place_id": "moscow-earth"
+        },
+        "birth_resolved": {
+          "utc_datetime": "1987-01-02T09:00:00Z",
+          "latitude": 55.75,
+          "longitude": 37.62,
+          "tz_id": "Europe/Moscow",
+          "utc_offset_seconds": 10800,
+          "canonical_place": "Moscow",
+          "time_unknown": true,
+          "birth_time_domain": {
+            "ranges": [
+              {
+                "first_utc": "1987-01-01T21:00:00Z",
+                "count": 1440
+              }
+            ]
+          },
+          "warnings": [
+            {
+              "source": "time",
+              "code": "TIME_UNKNOWN",
+              "message": "Assumed noon"
+            }
+          ]
+        },
+        "state_version": 1,
+        "base_chart": {
+          "state_version": 1,
+          "spec": {
+            "technique": "natal",
+            "chart_kind": "natal",
+            "include": [
+              "aspects",
+              "houses",
+              "positions",
+              "rulers"
+            ],
+            "house_system": "P",
+            "rulership": "traditional",
+            "near_interception_threshold": 0.125
+          }
+        },
+        "created_at": "2026-09-05T12:34:56.789123Z",
+        "expires_at": "2026-09-12T12:34:56.789123Z",
+        "hard_expires_at": "2026-10-05T12:34:56.789123Z"
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "golden-known",
+        "state_version": 1,
+        "created_at_us": 1788611696789123,
+        "expires_at_us": 1789216496789123,
+        "hard_expires_at_us": 1791203696789123,
+        "payload_version": 2
+      },
+      "payload": {
+        "session_id": "golden-known",
+        "birth_input": {
+          "birth_date": "1990-06-15",
+          "birth_time": "08:30:00",
+          "place_id": "paris"
+        },
+        "birth_resolved": {
+          "utc_datetime": "1990-06-15T06:30:00Z",
+          "latitude": 48.86,
+          "longitude": 2.35,
+          "tz_id": "Europe/Paris",
+          "utc_offset_seconds": 7200,
+          "canonical_place": "Paris",
+          "time_unknown": false,
+          "birth_time_domain": null,
+          "warnings": []
+        },
+        "state_version": 1,
+        "base_chart": {
+          "state_version": 1,
+          "spec": {
+            "technique": "natal",
+            "chart_kind": "cosmogram",
+            "include": [
+              "aspects",
+              "positions"
+            ],
+            "house_system": "P",
+            "rulership": "combined",
+            "near_interception_threshold": 1.0
+          }
+        },
+        "created_at": "2026-09-05T12:34:56.789123Z",
+        "expires_at": "2026-09-12T12:34:56.789123Z",
+        "hard_expires_at": "2026-10-05T12:34:56.789123Z"
+      }
+    }
+  ],
+  "dialog": {
+    "metadata": {
+      "session_id": "golden-full",
+      "expires_at_us": 1789216496789123,
+      "payload_version": 1
+    },
+    "payload": [
+      {
+        "turn_id": "complete",
+        "created_at": "2026-09-05T12:34:56.789124Z",
+        "selection": {
+          "topic": "natal",
+          "focus": "relationships"
+        },
+        "state_version_at_answer": 1,
+        "status": "complete",
+        "truncated": true,
+        "text": "Unicode: ☃"
+      },
+      {
+        "turn_id": "partial",
+        "created_at": "2026-09-05T12:34:56.789125Z",
+        "selection": {
+          "topic": "natal",
+          "focus": "career"
+        },
+        "state_version_at_answer": 99,
+        "status": "partial",
+        "truncated": false,
+        "text": "partial answer"
+      }
+    ]
+  }
+}

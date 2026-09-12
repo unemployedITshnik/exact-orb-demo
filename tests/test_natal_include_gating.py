@@ -6,11 +6,22 @@ from datetime import datetime, timezone
 
 import pytest
 
+from exact_orb.birth.types import BirthTimeDomain, UtcMinuteRange
 from exact_orb.engine.charts.natal import calculate_natal
 from tests.fixtures.natal_1985 import EXPECTED_BODY_LONGITUDES, REFERENCE
 
 
-ANGLE_DERIVED_POINTS = {"asc", "mc", "dsc", "ic", "vertex", "pars", "pars_fortune"}
+ANGLE_DERIVED_POINTS = {"asc", "mc", "dsc", "ic", "vertex", "pars_fortune"}
+
+
+def _domain_for(moment: datetime) -> BirthTimeDomain:
+    first = moment.astimezone(timezone.utc).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return BirthTimeDomain(ranges=(UtcMinuteRange(first_utc=first, count=1440),))
 
 
 def _reference_natal():
@@ -31,6 +42,7 @@ def _reference_cosmogram(include: set[str] | None = None):
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include=include or {"positions"},
+        birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
     )
 
 
@@ -115,6 +127,7 @@ def test_cosmogram_is_stable_across_time_of_day() -> None:
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include={"positions", "aspects", "configurations"},
+        birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
     )
     evening = calculate_natal(
         datetime(1985, 9, 1, 20, 45, tzinfo=timezone.utc),
@@ -123,6 +136,7 @@ def test_cosmogram_is_stable_across_time_of_day() -> None:
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include={"positions", "aspects", "configurations"},
+        birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
     )
 
     assert all(body.house is None for body in morning.bodies.values())
@@ -140,6 +154,7 @@ def test_rulers_without_houses_raises() -> None:
             chart_kind="cosmogram",
             house_system=REFERENCE["house_system"],
             include={"positions", "rulers"},
+            birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
         )
 
 
@@ -152,6 +167,72 @@ def test_strength_without_houses_raises() -> None:
             chart_kind="cosmogram",
             house_system=REFERENCE["house_system"],
             include={"positions", "strength"},
+            birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("chart_kind", "include"),
+    (
+        ("natal", {"positions", "houses", "configurations"}),
+        ("cosmogram", {"positions", "configurations"}),
+    ),
+)
+def test_configurations_without_aspects_raises_before_ephemeris(
+    chart_kind: str,
+    include: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("ephemeris must not be touched for invalid include")
+
+    monkeypatch.setattr("exact_orb.engine.charts.natal.validate_ephemeris_path", fail_if_called)
+
+    with pytest.raises(ValueError, match=r"configurations.*aspects"):
+        calculate_natal(
+            REFERENCE["datetime_utc"],
+            REFERENCE["latitude"],
+            REFERENCE["longitude"],
+            chart_kind=chart_kind,
+            house_system=REFERENCE["house_system"],
+            include=include,
+            birth_time_domain=(
+                _domain_for(REFERENCE["datetime_utc"])
+                if chart_kind == "cosmogram"
+                else None
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("chart_kind", "domain", "message"),
+    (
+        ("natal", _domain_for(REFERENCE["datetime_utc"]), "must not receive"),
+        ("cosmogram", None, "requires birth_time_domain"),
+    ),
+)
+def test_time_domain_mismatch_raises_before_ephemeris(
+    chart_kind: str,
+    domain: BirthTimeDomain | None,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("ephemeris must not be touched for invalid time domain")
+
+    monkeypatch.setattr(
+        "exact_orb.engine.charts.natal.validate_ephemeris_path",
+        fail_if_called,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        calculate_natal(
+            REFERENCE["datetime_utc"],
+            REFERENCE["latitude"],
+            REFERENCE["longitude"],
+            chart_kind=chart_kind,
+            house_system=REFERENCE["house_system"],
+            birth_time_domain=domain,
         )
 
 
@@ -176,6 +257,7 @@ def test_cosmogram_chart_kind_rejects_houses() -> None:
             chart_kind="cosmogram",
             house_system=REFERENCE["house_system"],
             include={"positions", "houses"},
+            birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
         )
 
 
@@ -186,6 +268,7 @@ def test_cosmogram_default_include_omits_house_dependent_blocks() -> None:
         REFERENCE["longitude"],
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
+        birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
     )
 
     assert chart.chart_kind == "cosmogram"
@@ -207,6 +290,7 @@ def test_positions_only_works_beyond_polar_circle() -> None:
         chart_kind="cosmogram",
         house_system=REFERENCE["house_system"],
         include={"positions"},
+        birth_time_domain=_domain_for(REFERENCE["datetime_utc"]),
     )
 
     assert chart.bodies

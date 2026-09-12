@@ -67,10 +67,10 @@ end note
 
 Artifacts -> Keys : calculation_key(\ncalculation_input_from(resolved),\nspec, calculation_version)
 
-Keys -> Keys : проекция: utc_datetime,\nlatitude, longitude\n(6 знаков, без микросекунд)
+Keys -> Keys : проекция: utc_datetime,\nlatitude, longitude (6 знаков),\nbirth_time_domain_digest
 Keys -> Keys : канонический JSON,\ninclude — отсортированный кортеж
 
-Keys --> Artifacts : "eo:calc:v1:<sha256>"
+Keys --> Artifacts : "eo:calc:v2:<sha256>"
 
 note right of Keys
 В ключ уходит проекция, а не весь

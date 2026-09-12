@@ -1105,9 +1105,11 @@ Frozen Pydantic base type для всех application-команд. Собств
 | `utc_offset_seconds` | `int` | Историческое смещение относительно UTC в секундах | Целое количество секунд | `14400` |
 | `canonical_place` | `str` | Каноническое название места из backend-каталога | Непустая строка | `"Москва, Россия"` |
 | `time_unknown` | `bool` | Признак неизвестного времени рождения | `true`, `false` | `false` |
+| `birth_time_domain` | `BirthTimeDomain \| None` | Все допустимые UTC-минуты при неизвестном времени | Непустой домен для `time_unknown=true`, иначе `None` | `null` |
 | `warnings` | `tuple[ResolutionWarning, ...]` | Машиночитаемые предупреждения резолва | Пустой tuple или набор предупреждений | `[]` |
 
-В `calculation_key` из этого объекта входят только `utc_datetime`, `latitude` и `longitude`.
+В `calculation_key` входят `utc_datetime`, `latitude`, `longitude` и digest
+`birth_time_domain`; presentation-поля не входят.
 
 ## Сообщение: `ResolutionWarning`
 
@@ -1242,7 +1244,7 @@ Handler возвращает `InputRequired` без изменения даже 
 
 | Атрибут | Тип атрибута | Описание | Возможные значения | Пример |
 |---|---|---|---|---|
-| `calculation_key` | `str` | Детерминированный ключ расчёта | Строка с префиксом `eo:calc:v1:` | `"eo:calc:v1:89f…"` |
+| `calculation_key` | `str` | Детерминированный ключ расчёта | Строка с префиксом `eo:calc:v2:` | `"eo:calc:v2:89f…"` |
 | `spec` | `ChartSpec` | Спецификация карты | В MVP — `NatalChartSpec` | См. полный natal-пример в разделе `NatalChartSpec` |
 | `calculation_version` | `str` | Отпечаток версии расчётного окружения | Непустая строка | `"sha256:c74a…"` |
 | `chart` | `ArtifactNatalChart` | Рассчитанные позиции, дома, аспекты и другие блоки | Валидный результат ядра | `{"chart_kind":"natal","positions":[...],"houses":[...]}` |
@@ -1313,7 +1315,7 @@ Handler не читает и не изменяет внутренние поля
 
 | Атрибут | Тип атрибута | Описание | Возможные значения | Пример |
 |---|---|---|---|---|
-| `artifact` | `ChartArtifact` | Полученная из кэша или рассчитанная карта | Валидный `ChartArtifact` | Ключ `eo:calc:v1:89f…`, полный natal `spec`, `chart.chart_kind="natal"` |
+| `artifact` | `ChartArtifact` | Полученная из кэша или рассчитанная карта | Валидный `ChartArtifact` | Ключ `eo:calc:v2:89f…`, полный natal `spec`, `chart.chart_kind="natal"` |
 | `delta` | `StateDelta` | Полная дельта для последующего commit | Полностью заполненный `StateDelta` | `BirthInput` + `ResolvedBirthData` + полный natal `NatalChartSpec` |
 
 `BuildNatalSuccess` ещё не означает, что состояние сессии сохранено. Модель frozen. Валидатор выполняет проверки строго в следующем порядке:

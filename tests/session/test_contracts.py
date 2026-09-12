@@ -282,6 +282,7 @@ def test_session_package_exports_the_complete_public_contract() -> None:
         "SessionSnapshot",
         "SessionState",
         "SessionStore",
+        "UnknownTimeStateMigrator",
         "StateCommitFailed",
         "StateDelta",
         "StateReadError",

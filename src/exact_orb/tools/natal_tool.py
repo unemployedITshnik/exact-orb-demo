@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
+from exact_orb.birth.types import BirthTimeDomain
 from exact_orb.engine.charts.natal import calculate_natal
 
 from .base import Tool
@@ -36,6 +37,7 @@ class NatalToolArgs(BaseModel):
     house_system: str = "P"
     rulership: str = "combined"
     include: tuple[str, ...] | None = None
+    birth_time_domain: BirthTimeDomain | None
 
     @field_validator("birth_datetime")
     @classmethod
@@ -43,6 +45,14 @@ class NatalToolArgs(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("birth_datetime must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def _time_domain_must_match_chart_kind(self) -> "NatalToolArgs":
+        if self.chart_kind == "cosmogram" and self.birth_time_domain is None:
+            raise ValueError("cosmogram requires birth_time_domain")
+        if self.chart_kind == "natal" and self.birth_time_domain is not None:
+            raise ValueError("natal must not have birth_time_domain")
+        return self
 
 
 class NatalTool(Tool):
@@ -72,6 +82,7 @@ class NatalTool(Tool):
             house_system=args.house_system,
             rulership=args.rulership,
             include=set(args.include) if args.include is not None else None,
+            birth_time_domain=args.birth_time_domain,
         )
         return ToolResult(
             tool_name=self.name,
