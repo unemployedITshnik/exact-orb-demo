@@ -208,6 +208,7 @@ def _bucket(state: EngineBalanceState, score: float) -> BalanceBucket:
 def _strength() -> NatalStrength:
     return NatalStrength(
         dignity_system="modern",
+        dispositor_system="modern",
         planets={
             "sun": _planet(
                 "sun", "Aries", status=EngineDignityStatus.EXALTATION,
@@ -392,6 +393,7 @@ def test_rich_artifact_projects_to_exact_literal_features_without_mutation() -> 
     projected = project_chart_features(source)
     assert projected == expected_features()
     assert source.model_dump(mode="python") == before
+    assert all("dispositor" not in field for field in ChartFeatures.model_fields)
     assert all(
         getattr(projected, family)
         for family in (

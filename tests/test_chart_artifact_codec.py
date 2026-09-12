@@ -41,9 +41,9 @@ BASE_UTC = datetime(1990, 9, 2, 10, 30, 45, tzinfo=timezone.utc)
 EPHE_FILES = ("sepl_18.se1", "semo_18.se1", "seas_18.se1")
 SENSITIVE_WARNING = "sensitive warning for 55.7558 37.6173 at 1990-09-02"
 
-# baseline: normalized ChartArtifact with ADR-0030 lunar-node-axis semantics +
+# baseline: normalized ChartArtifact with ADR-0033 unified strength systems +
 # vendored ephe/*.se1; recalculate only for an intentional contract update.
-NATAL_ARTIFACT_JSON_BASELINE_SHA256 = "0ccf14194eeca69de00582b74d51d5c0d9bf2c5d22208d5de58d539a69374c71"
+NATAL_ARTIFACT_JSON_BASELINE_SHA256 = "4a4470c47f0b7edec93d891ef48469371a75b990b5144d7480f6aaa36dc131d7"
 
 
 def test_chart_artifact_normalizes_raw_chart_to_artifact_safe_chart() -> None:
@@ -171,10 +171,40 @@ def test_encode_returns_deterministic_gzip_bytes_with_utf8_json_payload() -> Non
 
 def test_reference_natal_artifact_json_matches_normalized_schema_baseline() -> None:
     artifact = _reference_artifact()
+    payload = artifact.model_dump(mode="json")
+
+    strength = payload["chart"]["strength"]
+    assert strength["dignity_system"] == "modern"
+    assert strength["dispositor_system"] == "modern"
+    assert strength["dispositors"]["pluto"] == {
+        "body": "pluto",
+        "chain": ["pluto", "pluto"],
+        "steps_to_cycle": 0,
+        "cycle": ["pluto"],
+    }
 
     digest = sha256(artifact.model_dump_json().encode("utf-8")).hexdigest()
 
     assert digest == NATAL_ARTIFACT_JSON_BASELINE_SHA256
+
+
+@pytest.mark.parametrize("mutation", ("missing", "mismatch"))
+def test_decode_rejects_invalid_dispositor_system_metadata(mutation: str) -> None:
+    payload = _reference_artifact().model_dump(mode="json")
+    strength = payload["chart"]["strength"]
+    if mutation == "missing":
+        del strength["dispositor_system"]
+    else:
+        strength["dispositor_system"] = "traditional"
+    encoded = gzip.compress(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        mtime=0,
+    )
+
+    with pytest.raises(ChartArtifactDecodeError) as exc_info:
+        decode_chart_artifact(encoded)
+
+    assert exc_info.value.reason == "validation"
 
 
 def test_reference_artifact_serializes_only_canonical_point_references() -> None:

@@ -216,7 +216,11 @@ trapeze      -> opposition_1, opposition_2, base_1, base_2
 
 Все `DignityFeature` одной записи имеют одинаковый `system`:
 `NatalStrength.dignity_system` задан на карту целиком, поэтому смешанный набор
-engine произвести не может.
+engine произвести не может. По ADR-0033 та же система применяется к
+диспозиторам, а обязательный `NatalStrength.dispositor_system` равен
+`dignity_system`. Research v1 цепочки диспозиторов и взаимные рецепции не
+проецирует; изменение расчётной методики различается через
+`ResearchRecord.calculation_version`, без изменения feature schema.
 
 ## 4. Канонические модели
 

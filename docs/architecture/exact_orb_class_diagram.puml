@@ -816,6 +816,7 @@ package "exact_orb.engine.strength" as strength {
 
   class NatalStrength <<Pydantic>> {
     +dignity_system: Literal
+    +dispositor_system: Literal
     +planets: dict[str, PlanetStrength]
     +balance: ChartBalance
     +dispositors: dict[str, DispositorChain]
@@ -857,6 +858,13 @@ NatalStrength *-- LunarPhase
 NatalStrength *-- DegreeFlag
 NatalStrength *-- InterceptionSummary
 StrengthConfig --> HouseType
+
+note right of StrengthConfig
+  dignity_system is the single selector
+  for dignities and linear dispositors.
+  ChartSpec.rulership remains house-only;
+  combined is not a DispositorChain system.
+end note
 
 ' =========================
 ' ENGINE: CHARTS

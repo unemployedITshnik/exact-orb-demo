@@ -798,10 +798,12 @@ def _calculate_natal_strength(
     dispositors, mutual_receptions = calculate_dispositor_chains(
         body_signs,
         bodies=config.planets,
+        system=config.dignity_system,
     )
 
     strength = NatalStrength(
         dignity_system=config.dignity_system,
+        dispositor_system=config.dignity_system,
         planets=planet_strengths,
         balance=calculate_balance(bodies, angles, config),
         dispositors=dispositors,

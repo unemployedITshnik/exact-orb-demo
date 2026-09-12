@@ -141,6 +141,7 @@ def raw_chart(
 def _minimal_strength() -> NatalStrength:
     return NatalStrength(
         dignity_system="modern",
+        dispositor_system="modern",
         planets={},
         balance=ChartBalance(
             elements={},
